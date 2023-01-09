@@ -1,0 +1,44 @@
+#pragma once
+#ifndef TERRAINMAP_H
+#define TERRAINMAP_H
+
+#include <fmt/format.h>
+#include <cmath>
+#include <fstream>
+
+template <typename T>
+class TerrainMap {
+public:
+    const size_t rows;
+    const size_t cols;
+    const double pitch;
+
+    TerrainMap(double mapWidth, double mapHeight, double mapPitch) :
+     rows(std::ceil(mapHeight/mapPitch)), cols(std::ceil(mapWidth/mapPitch)), pitch(mapPitch), data(rows*cols, 0) {}
+
+    double gridIndexToXCoord(size_t j) { return pitch/2.0 + j*pitch; }
+    double gridIndexToYCoord(size_t i) { return pitch/2.0 + (rows-i-1)*pitch; }
+
+    size_t xCoordToGridIndex(double x) { return x/pitch; }
+    size_t yCoordToGridIndex(double y) { return (rows-1) - y/pitch; }
+
+    T& operator()(size_t i, size_t j) { return data[i*cols+j]; }
+
+    void savePFM(const std::string& filename) const {
+        std::ofstream os(filename, std::ios::out);
+        os << fmt::format("Pf\n");
+        os << fmt::format("{} {}\n", cols, rows);
+        os << fmt::format("-1\n");
+        for(int i=0; i<rows; ++i) {
+            for(int j=0; j<cols; ++j) {
+                float f = static_cast<float>(data[i*cols+j]);
+                os.write(reinterpret_cast<const char*>(&f), sizeof(float)); }
+        }
+        os.close();
+    }
+
+private:
+    std::vector<T> data;
+};
+
+#endif // TERRAINMAP_H
