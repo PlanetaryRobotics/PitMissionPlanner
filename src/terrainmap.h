@@ -16,13 +16,21 @@ public:
     TerrainMap(double mapWidth, double mapHeight, double mapPitch) :
      rows(std::ceil(mapHeight/mapPitch)), cols(std::ceil(mapWidth/mapPitch)), pitch(mapPitch), data(rows*cols, 0) {}
 
-    double gridIndexToXCoord(size_t j) { return pitch/2.0 + j*pitch; }
-    double gridIndexToYCoord(size_t i) { return pitch/2.0 + (rows-i-1)*pitch; }
+    double width() const {
+        return cols*pitch;
+    }
+    double height() const {
+        return rows*pitch;
+    }
 
-    size_t xCoordToGridIndex(double x) { return x/pitch; }
-    size_t yCoordToGridIndex(double y) { return (rows-1) - y/pitch; }
+    double gridIndexToXCoord(size_t j) const { return pitch/2.0 + j*pitch; }
+    double gridIndexToYCoord(size_t i) const { return pitch/2.0 + (rows-i-1)*pitch; }
+
+    size_t xCoordToGridIndex(double x) const { return x/pitch; }
+    size_t yCoordToGridIndex(double y) const { return (rows-1) - y/pitch; }
 
     T& operator()(size_t i, size_t j) { return data[i*cols+j]; }
+    const T& operator()(size_t i, size_t j) const { return data[i*cols+j]; }
 
     void savePFM(const std::string& filename) const {
         std::ofstream os(filename, std::ios::out);
@@ -32,7 +40,8 @@ public:
         for(int i=0; i<rows; ++i) {
             for(int j=0; j<cols; ++j) {
                 float f = static_cast<float>(data[i*cols+j]);
-                os.write(reinterpret_cast<const char*>(&f), sizeof(float)); }
+                os.write(reinterpret_cast<const char*>(&f), sizeof(float));
+            }
         }
         os.close();
     }

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.13)
 
 project(planranger CXX)
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 
 find_package(fmt 3.3 REQUIRED)
 find_package(embree 3.0 REQUIRED)
