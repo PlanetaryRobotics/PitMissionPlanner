@@ -9,9 +9,9 @@
 template <typename T>
 class TerrainMap {
 public:
-    const size_t rows;
-    const size_t cols;
-    const double pitch;
+    size_t rows;
+    size_t cols;
+    double pitch;
 
     TerrainMap(double mapWidth, double mapHeight, double mapPitch) :
      rows(std::ceil(mapHeight/mapPitch)), cols(std::ceil(mapWidth/mapPitch)), pitch(mapPitch), data(rows*cols, 0) {}

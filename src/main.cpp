@@ -15,6 +15,8 @@ struct PlannerConfiguration {
     double landerHeight = 3.0;
     double roverHeight = 1.0;
     double roverMaxSlope = 15.0;
+    double numCandidates = 100000;
+    double visAngle = 55;
 };
 
 std::optional<PlannerConfiguration> parseCommandLine(int argc, char* argv[]) {
@@ -31,6 +33,8 @@ std::optional<PlannerConfiguration> parseCommandLine(int argc, char* argv[]) {
         fmt::print("\trs: the rover's max slope capability in degrees.\n");
         fmt::print("\trh: the height of the rover antenna.\n");
         fmt::print("\tlh: the height of the lander antenna.\n");
+        fmt::print("\tnc: the number of candidate vantages to evaluate.\n");
+        fmt::print("\tva: the visibility angle [deg] beyond which a view is not counted.\n");
         return {};
     }
     cmdl(1, cfg.meshfile) >> cfg.meshfile;
@@ -40,6 +44,7 @@ std::optional<PlannerConfiguration> parseCommandLine(int argc, char* argv[]) {
     cmdl("rs", cfg.roverMaxSlope) >> cfg.roverMaxSlope;
     cmdl("rh", cfg.roverHeight) >> cfg.roverHeight;
     cmdl("lh", cfg.landerHeight) >> cfg.landerHeight;
+    cmdl("nc", cfg.numCandidates) >> cfg.numCandidates;
     return std::make_optional(cfg);
 }
 
@@ -79,10 +84,10 @@ buildTerrainMaps(const TerrainMesh& tmesh, const double mapPitch) {
     return std::make_tuple(elevationMap, slopeMap, priorityMap);
 }
 
-TerrainMap<char> buildReachabilityMap(const TerrainMap<char>& safeMap,
+TerrainMap<int> buildReachabilityMap(const TerrainMap<int>& safeMap,
                                       double siteX, double siteY,
                                       double roverMaxSlope) {
-    TerrainMap<char> reachMap(safeMap.width(), safeMap.height(), safeMap.pitch);
+    TerrainMap<int> reachMap(safeMap.width(), safeMap.height(), safeMap.pitch);
 
     int rows = safeMap.rows;
     int cols = safeMap.cols;
@@ -157,12 +162,12 @@ TerrainMap<char> buildReachabilityMap(const TerrainMap<char>& safeMap,
     return reachMap;
 }
 
-TerrainMap<char> buildCommsMap(const TerrainMesh& tmesh,
+TerrainMap<int> buildCommsMap(const TerrainMesh& tmesh,
                                const TerrainMap<float>& elevationMap,
                                double siteX, double siteY,
                                double landerHeight, double roverHeight) {
 
-    TerrainMap<char> commsMap(elevationMap.width(),
+    TerrainMap<int> commsMap(elevationMap.width(),
                               elevationMap.height(),
                               elevationMap.pitch);
 
@@ -201,6 +206,16 @@ TerrainMap<char> buildCommsMap(const TerrainMesh& tmesh,
     return commsMap;
 }
 
+TerrainMap<int> buildSafeMap(const TerrainMap<int>& commsMap, const TerrainMap<float>& slopeMap, double roverMaxSlope) {
+    TerrainMap<int> safeMap = commsMap;
+    for(int i=0; i<safeMap.rows; ++i) {
+        for(int j=0; j<safeMap.cols; ++j) {
+            safeMap(i,j) = (commsMap(i,j) > 0 && slopeMap(i,j) <= roverMaxSlope) ? 1 : 0;
+        }
+    }
+    return safeMap;
+}
+
 int main(int argc, char* argv[]) {
 
     // Configure the planner.
@@ -210,56 +225,138 @@ int main(int argc, char* argv[]) {
     // Read the terrain mesh.
     TerrainMesh tmesh(config->meshfile);
 
-    // Construct terrain and communications maps.
+    // Construct elevation, slope, and priority maps.
     auto [elevationMap, slopeMap, priorityMap] = buildTerrainMaps(tmesh, config->mapPitch);
     elevationMap.savePFM("elevation.pfm");
     slopeMap.savePFM("slope.pfm");
     priorityMap.savePFM("priority.pfm");
 
+    // Construct lander communications map.
     TerrainMap commsMap = buildCommsMap(tmesh, elevationMap,
                                             config->landingSiteX, config->landingSiteY,
                                             config->landerHeight, config->roverHeight);
     commsMap.savePFM("comms.pfm");
 
-    TerrainMap<char> safeMap = commsMap;
-    for(int i=0; i<safeMap.rows; ++i) {
-        for(int j=0; j<safeMap.cols; ++j) {
-            safeMap(i,j) = (commsMap(i,j) > 0 && slopeMap(i,j) <= config->roverMaxSlope) ? 1 : 0;
-        }
-    }
+    // Map low-slope, communicable terrain.
+    const auto safeMap = buildSafeMap(commsMap, slopeMap, config->roverMaxSlope);
     safeMap.savePFM("safe.pfm");
 
+    // Flood-fill reachable safe terrain.
     TerrainMap reachMap = buildReachabilityMap(safeMap, config->landingSiteX, config->landingSiteY, 13);
     reachMap.savePFM("reach.pfm");
 
     // Generate candidate vantages.
-    //     - Must be reachable, communicable.
     struct Vantage {
         double x, y, z;
+        std::vector<bool> coverage;
+        double totalCoverage = 0;
     };
     std::vector<Vantage> candidates;
 
-    int numCandidates = 1000000;
-    auto candidateMap = safeMap;
-    while(candidates.size() < numCandidates) {
-        int i = commsMap.rows * static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
-        int j = commsMap.cols * static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
+    auto candidateMap = reachMap;
+    while(candidates.size() < config->numCandidates) {
+        int i = reachMap.rows * static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
+        int j = reachMap.cols * static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
         if( reachMap(i,j) > 0 ) {
             candidateMap(i,j) = 2;
             Vantage v;
-            v.x = commsMap.gridIndexToXCoord(j);
-            v.y = commsMap.gridIndexToYCoord(i);
-            v.z = elevationMap(i,j); 
+            v.x = reachMap.gridIndexToXCoord(j);
+            v.y = reachMap.gridIndexToYCoord(i);
+            v.z = elevationMap(i,j) + config->roverHeight;
             candidates.push_back(v);
         }
     }
     candidateMap.savePFM("candidates.pfm");
 
+    // Compute visibility coverage for each candidate.
+    // Generate visibility probes.
+    struct Probe {
+        double x,y,z;
+        double priority;
+    };
+    int numProbes = 10000;
+    std::vector<Probe> probes;
+    auto probeMap = priorityMap;
+    while(probes.size() < numProbes) {
+        int i = reachMap.rows * static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
+        int j = reachMap.cols * static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
+        if( priorityMap(i,j) > 0 ) {
+            probeMap(i,j) = 2;
+            Probe p;
+            p.x = reachMap.gridIndexToXCoord(j);
+            p.y = reachMap.gridIndexToYCoord(i);
+            p.z = elevationMap(i,j) + config->roverHeight;
+            p.priority = priorityMap(i,j);
+            probes.push_back(p);
+        }
+    }
+    probeMap.savePFM("probes.pfm");
 
-    // Compute coverage for each candidate.
+    // For every candidate, trace a ray to all view coverage probes.
+    #pragma omp parallel for
+    for(int ci=0; ci<candidates.size(); ++ci) {
+        fmt::print("Computing Visibility {}/{}\n", ci, candidates.size());
+        auto& candidate = candidates[ci];
+        candidate.coverage.resize(probes.size());
+
+        TerrainMesh::Ray ray;
+        ray.oX = candidate.x;
+        ray.oY = candidate.y;
+        ray.oZ = candidate.z + config->roverHeight;
+        for(int pi = 0; pi<probes.size(); ++pi) {
+            auto& p = probes[pi];
+            ray.dX = p.x-candidate.x;
+            ray.dY = p.y-candidate.y;
+            ray.dZ = p.z-candidate.z;
+            double rayNorm = std::sqrt(ray.dX*ray.dX+ray.dY*ray.dY+ray.dZ*ray.dZ);
+            ray.dX /= rayNorm; ray.dY /= rayNorm; ray.dZ /= rayNorm;
+            const auto hit = tmesh.raytrace(ray);
+            if( hit ) {
+                double hitAngle = 180/M_PI * std::acos(-ray.dX*hit->nx-ray.dY*hit->ny-ray.dZ*hit->nz);
+                if( hitAngle < config->visAngle ) {
+                    candidate.coverage[pi] = true;
+                    candidate.totalCoverage += p.priority;
+                }
+            }
+        }
+        int i = candidateMap.yCoordToGridIndex(candidate.y);
+        int j = candidateMap.xCoordToGridIndex(candidate.x);
+        candidateMap(i,j) = candidate.totalCoverage;
+    }
+    candidateMap.savePFM("candidates_coverage.pfm");
+
     // Select k vantages with maximum weighted coverage.
+    int numVantages = 30;
+    std::vector<unsigned char> visCounters(probes.size());
+    std::vector<Vantage> finalVantages;
+
+    candidateMap = reachMap;
+    std::set<int> taken;
+    // Make k selections. Choose the candidate that produces the greatest *new* coverage.
+    for(int k = 0; k<numVantages; ++k) {
+        int best_ci = 0;
+        for(int ci=0; ci<candidates.size(); ++ci) {
+            if( candidates[ci].totalCoverage > candidates[best_ci].totalCoverage && !taken.contains(ci) ) {
+                best_ci = ci;
+            }
+        }
+        taken.insert(best_ci);
+        Vantage newVantage;
+        newVantage.x = candidates[best_ci].x;
+        newVantage.y = candidates[best_ci].y;
+        newVantage.z = candidates[best_ci].z;
+        finalVantages.push_back(newVantage);
+        int i = candidateMap.yCoordToGridIndex(newVantage.y);
+        int j = candidateMap.xCoordToGridIndex(newVantage.x);
+        candidateMap(i,j) = candidates[best_ci].totalCoverage;
+    }
+    candidateMap.savePFM("vantages.pfm");
+
     // Compute paths between all pairs of k vantages plus the landing site.
+
     // Compute exploration route.
+
+    // Draw pretty pictures.
 
     return 0;
 }
