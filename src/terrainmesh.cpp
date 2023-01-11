@@ -38,7 +38,7 @@ TerrainMesh::TerrainMesh(const std::string& filename) : filename(filename) {
     const auto vertexColors = plyIn.getVertexColors();
     for(const auto& c: vertexColors) {
         float mean = (c[0]+c[1]+c[2]) / 3.0f;
-        vertexPriorities.push_back(mean / 255.0);
+        vertexPriorities.push_back(std::pow(mean / 255.0f, 8.0));
     }
 
     const double minX = this->minX();
@@ -127,17 +127,16 @@ TerrainMesh::raytrace(const TerrainMesh::Ray& ray) const {
         return {};
     }
 
-    TerrainMesh::Hit hit;
-    const float u = rayhit.hit.u;
-    const float v = rayhit.hit.v;
-    const float w = 1-u-v;
+    const float u = 1-rayhit.hit.u-rayhit.hit.v;
+    const float v = rayhit.hit.u;
+    const float w = rayhit.hit.v;
 
     const size_t tid = rayhit.hit.primID;
     const size_t Aid = faceIndices[3*tid+0];
     const size_t Bid = faceIndices[3*tid+1];
     const size_t Cid = faceIndices[3*tid+2];
 
-    hit.faceIndex = tid;
+    TerrainMesh::Hit hit;
     hit.x  = u*vertexPositions[3*Aid+0] + v*vertexPositions[3*Bid+0] + w*vertexPositions[3*Cid+0];
     hit.y  = u*vertexPositions[3*Aid+1] + v*vertexPositions[3*Bid+1] + w*vertexPositions[3*Cid+1];
     hit.z  = u*vertexPositions[3*Aid+2] + v*vertexPositions[3*Bid+2] + w*vertexPositions[3*Cid+2];
@@ -145,6 +144,7 @@ TerrainMesh::raytrace(const TerrainMesh::Ray& ray) const {
     hit.ny = u*vertexNormals[3*Aid+1] + v*vertexNormals[3*Bid+1] + w*vertexNormals[3*Cid+1];
     hit.nz = u*vertexNormals[3*Aid+2] + v*vertexNormals[3*Bid+2] + w*vertexNormals[3*Cid+2];
     hit.priority = u*vertexPriorities[Aid] + v*vertexPriorities[Bid] + w*vertexPriorities[Cid];
+    hit.faceIndex = tid;
 
     return hit;
 }

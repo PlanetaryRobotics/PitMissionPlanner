@@ -17,7 +17,7 @@ struct PlannerConfiguration {
     double roverMaxSlope = 20.0;
     int    numProbes     = 50000;
     int    numCandidates = 100000;
-    int    numVantages   = 30;
+    int    numVantages   = 15;
     double visAngle      = 55;
 };
 
@@ -79,6 +79,7 @@ buildTerrainMaps(const TerrainMesh& tmesh, const double mapPitch) {
             if( hit ) {
                 elevationMap(i,j) = hit->z;
                 slopeMap(i,j) = 180.0/M_PI * std::acos(0.0*hit->nx+0.0*hit->ny+1.0*hit->nz);
+                if (std::isnan(slopeMap(i,j))) { slopeMap(i,j) = 0.0f; }
                 priorityMap(i,j) = hit->priority;
             } else {
                 elevationMap(i,j) = minZ;
@@ -370,6 +371,7 @@ TerrainMap buildCoverageMap(const TerrainMesh& tmesh, const TerrainMap& elevatio
     for(int vi=0; vi<vantages.size(); ++vi) {
         auto& v = vantages[vi];
         fmt::print("Generating Coverage Map: {}/{}\n", vi, vantages.size());
+        #pragma omp parallel for
         for(int ri=0; ri<coverageMap.cols; ++ri) {
             for(int rj=0; rj<coverageMap.rows; ++rj) {
                 TerrainMesh::Ray ray;
@@ -402,9 +404,33 @@ TerrainMap buildCoverageMap(const TerrainMesh& tmesh, const TerrainMap& elevatio
     for(const auto& v : vantages) {
         int i = coverageMap.yCoordToGridIndex(v.y);
         int j = coverageMap.xCoordToGridIndex(v.x);
-        coverageMap(i,j) = vantages.size();
+        coverageMap(i,j) = vantages.size()+1;
+        if( i+1 < coverageMap.rows) { coverageMap(i+1,j) = vantages.size()+1; }
+        if( i-1 >= 0 ) { coverageMap(i-1,j) = vantages.size()+1; }
+        if( j+1 < coverageMap.cols ) { coverageMap(i,j+1) = vantages.size()+1; }
+        if( j-1 >= 0 ) { coverageMap(i,j-1) = vantages.size()+1; }
     }
     return coverageMap;
+}
+
+TerrainMap blur(const TerrainMap& map, int W_2=1) {
+    TerrainMap m(map.width(), map.height(), map.pitch);
+    for(int i=0; i<m.rows; ++i) {
+        for(int j=0; j<m.cols; ++j) {
+            float sum = 0;
+            int count = 0;
+            for(int ii=-W_2; ii<=W_2; ++ii) {
+                if( i+ii < 0 || i+ii >= m.rows ) { continue; }
+                for(int jj=-W_2; jj<=W_2; ++jj) {
+                    if( j+jj < 0 || j+jj >= m.cols ) { continue; }
+                    sum += map(i+ii, j+jj);
+                    count++;
+                }
+                m(i,j) = sum/count;
+            }
+        }
+    }
+    return m;
 }
 
 int main(int argc, char* argv[]) {
@@ -418,6 +444,7 @@ int main(int argc, char* argv[]) {
 
     // Construct elevation, slope, and priority maps.
     auto [elevationMap, slopeMap, priorityMap] = buildTerrainMaps(tmesh, config->mapPitch);
+    slopeMap = blur(slopeMap);
     elevationMap.savePFM("elevation.pfm");
     slopeMap.savePFM("slope.pfm");
     priorityMap.savePFM("priority.pfm");
@@ -447,11 +474,18 @@ int main(int argc, char* argv[]) {
 
     // Select the best vantages from all of the candidates.
     auto vantages = selectVantages(candidates, probes, config->numVantages);
-    auto vantageMap = reachMap;
+    auto vantageMap = slopeMap;
+    double maxCoverage = 0;
+    for(const auto& v : vantages) { maxCoverage = std::max(maxCoverage, v.totalCoverage); }
     for(const auto& v : vantages) {
         int j = vantageMap.xCoordToGridIndex(v.x);
         int i = vantageMap.yCoordToGridIndex(v.y);
-        vantageMap(i,j) = v.totalCoverage;
+        double markerValue = 120 + 10 * v.totalCoverage / maxCoverage;
+        vantageMap(i,j) = markerValue;
+        if( i+1 < vantageMap.rows) { vantageMap(i+1,j) = markerValue; }
+        if( i-1 >= 0 ) { vantageMap(i-1,j) = markerValue; }
+        if( j+1 < vantageMap.cols ) { vantageMap(i,j+1) = markerValue; }
+        if( j-1 >= 0 ) { vantageMap(i,j-1) = markerValue; }
     }
     vantageMap.savePFM("vantages.pfm");
 
@@ -464,7 +498,11 @@ int main(int argc, char* argv[]) {
         auto coverageMap = buildCoverageMap(tmesh, elevationMap, tmp, config->roverHeight, config->visAngle);
         int j = vantageMap.xCoordToGridIndex(vantages[vi].x);
         int i = vantageMap.yCoordToGridIndex(vantages[vi].y);
-        coverageMap(i,j) = 2;
+        coverageMap(i,j) = vantages.size()+1;
+        if( i+1 < coverageMap.rows) { coverageMap(i+1,j) = vantages.size()+1; }
+        if( i-1 >= 0 ) { coverageMap(i-1,j) = vantages.size()+1; }
+        if( j+1 < coverageMap.cols ) { coverageMap(i,j+1) = vantages.size()+1; }
+        if( j-1 >= 0 ) { coverageMap(i,j-1) = vantages.size()+1; }
         coverageMap.savePFM(fmt::format("coverage_{:02}.pfm",vi));
     }
 
