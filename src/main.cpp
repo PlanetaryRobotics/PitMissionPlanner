@@ -277,7 +277,7 @@ generateVantageCandidates(const TerrainMesh& tmesh,
     // For every candidate, trace a ray to all view coverage probes.
     #pragma omp parallel for
     for(int ci=0; ci<candidates.size(); ++ci) {
-        fmt::print("Computing Visibility {:06d}/{:06d}\n", ci, candidates.size());
+        fmt::print("Computing Visibility {:6d}/{:6d}\n", ci, candidates.size());
         auto& candidate = candidates[ci];
         candidate.coverage.resize(probes.size());
 
@@ -298,7 +298,7 @@ generateVantageCandidates(const TerrainMesh& tmesh,
                 double hitDist = std::sqrt((ray.oX-hit->x)*(ray.oX-hit->x) +
                                            (ray.oY-hit->y)*(ray.oY-hit->y) +
                                            (ray.oZ-hit->z)*(ray.oZ-hit->z));
-                if( hitAngle < visAngle && std::abs(rayNorm-hitDist) < 0.02*rayNorm ) {
+                if( hitAngle < visAngle && std::abs(rayNorm-hitDist) < 0.05*rayNorm ) {
                     candidate.coverage[pi] = true;
                     candidate.totalCoverage += p.priority;
                 }
