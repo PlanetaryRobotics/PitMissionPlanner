@@ -6,7 +6,6 @@
 #include <cmath>
 #include <fstream>
 
-template <typename T>
 class TerrainMap {
 public:
     size_t rows;
@@ -24,13 +23,13 @@ public:
     }
 
     double gridIndexToXCoord(size_t j) const { return pitch/2.0 + j*pitch; }
-    double gridIndexToYCoord(size_t i) const { return pitch/2.0 + (rows-i-1)*pitch; }
+    double gridIndexToYCoord(size_t i) const { return pitch/2.0 + i*pitch; }
 
     size_t xCoordToGridIndex(double x) const { return x/pitch; }
-    size_t yCoordToGridIndex(double y) const { return (rows-1) - y/pitch; }
+    size_t yCoordToGridIndex(double y) const { return y/pitch; }
 
-    T& operator()(size_t i, size_t j) { return data[i*cols+j]; }
-    const T& operator()(size_t i, size_t j) const { return data[i*cols+j]; }
+    float& operator()(size_t i, size_t j) { return data[i*cols+j]; }
+    const float& operator()(size_t i, size_t j) const { return data[i*cols+j]; }
 
     void savePFM(const std::string& filename) const {
         std::ofstream os(filename, std::ios::out);
@@ -47,7 +46,7 @@ public:
     }
 
 private:
-    std::vector<T> data;
+    std::vector<float> data;
 };
 
 #endif // TERRAINMAP_H

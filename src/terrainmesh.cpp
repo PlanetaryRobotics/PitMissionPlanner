@@ -37,7 +37,8 @@ TerrainMesh::TerrainMesh(const std::string& filename) : filename(filename) {
     }
     const auto vertexColors = plyIn.getVertexColors();
     for(const auto& c: vertexColors) {
-        vertexPriorities.push_back((c[0]+c[1]+c[2])/3.0 * 1.0/255.0);
+        float mean = (c[0]+c[1]+c[2]) / 3.0f;
+        vertexPriorities.push_back(mean / 255.0);
     }
 
     const double minX = this->minX();
