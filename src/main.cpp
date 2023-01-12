@@ -8,16 +8,16 @@
 
 
 struct PlannerConfiguration {
-    std::string meshfile  = "../meshes/lmp_science.ply";
+    std::string meshfile  = "../meshes/lmp_science_small.ply";
     std::string outputDir = "./";
     double mapPitch       = 1.0;
-    double landingSiteX   = 825;
-    double landingSiteY   = 1000;
+    double landingSiteX   = 380;
+    double landingSiteY   = 500;
     double landerHeight   = 3.0;
     double roverHeight    = 1.0;
     double roverMaxSlope  = 20.0;
-    int    numProbes      = 50000;
-    int    numCandidates  = 100000;
+    int    numProbes      = 10000;
+    int    numCandidates  = 10000;
     int    numVantages    = 15;
     double visAngle       = 55;
 };
