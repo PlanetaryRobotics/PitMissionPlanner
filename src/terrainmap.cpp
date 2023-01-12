@@ -31,3 +31,20 @@ void TerrainMap::savePFM(const std::string& filename) const {
     }
     os.close();
 }
+
+void TerrainMap::drawCircle(double x, double y, double val, double rad) {
+    int cj = xCoordToGridIndex(x);
+    int ci = yCoordToGridIndex(y);
+    int R = std::ceil(rad / pitch);
+
+    for(int i=ci-R; i<=ci+R; ++i) {
+        for(int j=cj-R; j<=cj+R; ++j) {
+            if( i < 0 || i > rows ) { continue; }
+            if( j < 0 || j > cols ) { continue; }
+            if( (i-ci)*(i-ci)+(j-cj)*(j-cj) < R*R ) {
+                this->operator()(i,j) = val;
+            }
+        }
+    }
+}
+

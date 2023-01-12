@@ -470,32 +470,24 @@ int main(int argc, char* argv[]) {
     // Construct elevation, slope, and priority maps.
     auto [elevationMap, slopeMap, priorityMap] = buildTerrainMaps(tmesh, config->mapPitch);
     slopeMap = blur(slopeMap);
-    elevationMap.saveEXR(config->outputDir+"elevation.exr");
-    slopeMap.saveEXR(config->outputDir+"slope.exr");
-    priorityMap.saveEXR(config->outputDir+"priority.exr");
 
     // Construct lander communications map.
     TerrainMap commsMap = buildCommsMap(tmesh, elevationMap,
                                             config->landingSiteX, config->landingSiteY,
                                             config->landerHeight, config->roverHeight);
-    commsMap.saveEXR(config->outputDir+"comms.exr");
 
     // Map low-slope, communicable terrain.
     const auto safeMap = buildSafeMap(commsMap, slopeMap, config->roverMaxSlope);
-    safeMap.saveEXR(config->outputDir+"safe.exr");
 
     // Flood-fill reachable safe terrain.
     TerrainMap reachMap = buildReachabilityMap(safeMap, config->landingSiteX, config->landingSiteY, 13);
-    reachMap.saveEXR(config->outputDir+"reach.exr");
 
     // Generate visibility probes.
     auto [probes, probeMap] = generateVisibilityProbes(priorityMap, elevationMap, config->numProbes, config->roverHeight);
-    probeMap.saveEXR(config->outputDir+"probes.exr");
 
     // Generate candidate vantages.
     auto [candidates, candidateMap] = generateVantageCandidates(tmesh, reachMap, elevationMap, probes,
                                                                 config->numCandidates, config->roverHeight, config->visAngle);
-    candidateMap.saveEXR(config->outputDir+"candidates.exr");
 
     // Select the best vantages from all of the candidates.
     auto vantages = selectVantages(candidates, probes, config->numVantages);
@@ -515,7 +507,9 @@ int main(int argc, char* argv[]) {
             }
         }
     }
-    vantageMap.saveEXR(config->outputDir+"vantages.exr");
+
+    // Map combined coverage from all vantages.
+    auto coverageMap = buildCoverageMap(tmesh, elevationMap, vantages, config->roverHeight, config->visAngle);
 
     // Save vantages to xyz file.
     {
@@ -527,21 +521,68 @@ int main(int argc, char* argv[]) {
         file.close();
     }
 
-    auto coverageMap = buildCoverageMap(tmesh, elevationMap, vantages, config->roverHeight, config->visAngle);
-    coverageMap.saveEXR(config->outputDir+"coverage.exr");
-
-    for(int vi=0; vi<vantages.size(); ++vi) {
-        std::vector<Vantage> tmp;
-        tmp.push_back(vantages[vi]);
-        auto coverageMap = buildCoverageMap(tmesh, elevationMap, tmp, config->roverHeight, config->visAngle);
-        int j = vantageMap.xCoordToGridIndex(vantages[vi].x);
-        int i = vantageMap.yCoordToGridIndex(vantages[vi].y);
-        coverageMap(i,j) = vantages.size()+1;
-        if( i+1 < coverageMap.rows) { coverageMap(i+1,j) = vantages.size()+1; }
-        if( i-1 >= 0 ) { coverageMap(i-1,j) = vantages.size()+1; }
-        if( j+1 < coverageMap.cols ) { coverageMap(i,j+1) = vantages.size()+1; }
-        if( j-1 >= 0 ) { coverageMap(i,j-1) = vantages.size()+1; }
-        coverageMap.saveEXR(config->outputDir+fmt::format("coverage_{:02}.exr",vi));
+    // Save maps.
+    {
+        {
+            auto map = elevationMap;
+            map.drawCircle(config->landingSiteX, config->landingSiteY, 100, 4.0);
+            map.saveEXR(config->outputDir+"elevation.exr");
+        }
+        {
+            auto map = slopeMap;
+            map.drawCircle(config->landingSiteX, config->landingSiteY, 100, 4.0);
+            map.saveEXR(config->outputDir+"slope.exr");
+        }
+        {
+            auto map = priorityMap;
+            map.drawCircle(config->landingSiteX, config->landingSiteY, 10, 4.0);
+            map.saveEXR(config->outputDir+"priority.exr");
+        }
+        {
+            auto map = reachMap;
+            map.drawCircle(config->landingSiteX, config->landingSiteY, 100, 4.0);
+            map.saveEXR(config->outputDir+"reach.exr");
+        }
+        {
+            auto map = commsMap;
+            map.drawCircle(config->landingSiteX, config->landingSiteY, 100, 4.0);
+            map.saveEXR(config->outputDir+"comms.exr");
+        }
+        {
+            auto map = safeMap;
+            map.drawCircle(config->landingSiteX, config->landingSiteY, 100, 4.0);
+            map.saveEXR(config->outputDir+"safe.exr");
+        }
+        {
+            auto map = probeMap;
+            map.drawCircle(config->landingSiteX, config->landingSiteY, 100, 4.0);
+            map.saveEXR(config->outputDir+"probes.exr");
+        }
+        {
+            auto map = candidateMap;
+            map.drawCircle(config->landingSiteX, config->landingSiteY, 100, 4.0);
+            map.saveEXR(config->outputDir+"candidates.exr");
+        }
+        {
+            auto map = vantageMap;
+            map.drawCircle(config->landingSiteX, config->landingSiteY, 100, 4.0);
+            map.saveEXR(config->outputDir+"vantages.exr");
+        }
+        {
+            auto map = coverageMap;
+            map.drawCircle(config->landingSiteX, config->landingSiteY, 100, 4.0);
+            map.saveEXR(config->outputDir+"coverage.exr");
+        }
+        for(int vi=0; vi<vantages.size(); ++vi) {
+            std::vector<Vantage> tmp;
+            tmp.push_back(vantages[vi]);
+            auto coverageMap = buildCoverageMap(tmesh, elevationMap, tmp, config->roverHeight, config->visAngle);
+            int j = vantageMap.xCoordToGridIndex(vantages[vi].x);
+            int i = vantageMap.yCoordToGridIndex(vantages[vi].y);
+            coverageMap.drawCircle(vantages[vi].x, vantages[vi].y, vantages.size()+1, 3.0);
+            coverageMap.drawCircle(config->landingSiteX, config->landingSiteY, vantages.size()+10, 4.0);
+            coverageMap.saveEXR(config->outputDir+fmt::format("coverage_{:02}.exr",vi));
+        }
     }
 
     // Compute paths between all pairs of k vantages plus the landing site.

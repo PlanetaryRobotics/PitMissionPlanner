@@ -31,6 +31,8 @@ public:
     float& operator()(size_t i, size_t j) { return data[i*cols+j]; }
     const float& operator()(size_t i, size_t j) const { return data[i*cols+j]; }
 
+    void drawCircle(double x, double y, double val, double rad);
+
     void saveEXR(const std::string& filename) const;
     void savePFM(const std::string& filename) const;
 
