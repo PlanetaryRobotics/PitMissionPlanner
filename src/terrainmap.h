@@ -2,9 +2,9 @@
 #ifndef TERRAINMAP_H
 #define TERRAINMAP_H
 
-#include <fmt/format.h>
 #include <cmath>
 #include <fstream>
+#include <vector>
 
 class TerrainMap {
 public:
@@ -31,19 +31,8 @@ public:
     float& operator()(size_t i, size_t j) { return data[i*cols+j]; }
     const float& operator()(size_t i, size_t j) const { return data[i*cols+j]; }
 
-    void savePFM(const std::string& filename) const {
-        std::ofstream os(filename, std::ios::out);
-        os << fmt::format("Pf\n");
-        os << fmt::format("{} {}\n", cols, rows);
-        os << fmt::format("-1\n");
-        for(int i=0; i<rows; ++i) {
-            for(int j=0; j<cols; ++j) {
-                float f = static_cast<float>(data[i*cols+j]);
-                os.write(reinterpret_cast<const char*>(&f), sizeof(float));
-            }
-        }
-        os.close();
-    }
+    void saveEXR(const std::string& filename) const;
+    void savePFM(const std::string& filename) const;
 
 private:
     std::vector<float> data;

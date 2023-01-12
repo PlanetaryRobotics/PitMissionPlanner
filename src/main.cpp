@@ -8,17 +8,18 @@
 
 
 struct PlannerConfiguration {
-    std::string meshfile = "../meshes/lmp_science.ply";
-    double mapPitch      = 1.0;
-    double landingSiteX  = 825;
-    double landingSiteY  = 1000;
-    double landerHeight  = 3.0;
-    double roverHeight   = 1.0;
-    double roverMaxSlope = 20.0;
-    int    numProbes     = 50000;
-    int    numCandidates = 100000;
-    int    numVantages   = 15;
-    double visAngle      = 55;
+    std::string meshfile  = "../meshes/lmp_science.ply";
+    std::string outputDir = "./";
+    double mapPitch       = 1.0;
+    double landingSiteX   = 825;
+    double landingSiteY   = 1000;
+    double landerHeight   = 3.0;
+    double roverHeight    = 1.0;
+    double roverMaxSlope  = 20.0;
+    int    numProbes      = 50000;
+    int    numCandidates  = 100000;
+    int    numVantages    = 15;
+    double visAngle       = 55;
 };
 
 std::optional<PlannerConfiguration> parseCommandLine(int argc, char* argv[]) {
@@ -27,8 +28,9 @@ std::optional<PlannerConfiguration> parseCommandLine(int argc, char* argv[]) {
     argh::parser cmdl(argc, argv);
 
     if( cmdl[{ "-h", "--help" }] ) {
-        fmt::print("usage: planranger [-p][-x][-y][-rs][-rh][-lh] meshfile\n");
+        fmt::print("usage: planranger [-p][-x][-y][-rs][-rh][-lh] meshfile outdir\n");
         fmt::print("\tmeshfile: a .ply format map of terrain surrounding a lunar pit.\n");
+        fmt::print("\toutdir: a directory in which to place the output.\n");
         fmt::print("\tp: the grid spacing (in meters) to use for generated maps.\n");
         fmt::print("\tx: the x-coordinate of the landing site.\n");
         fmt::print("\ty: the y-coordinate of the landing site.\n");
@@ -41,7 +43,11 @@ std::optional<PlannerConfiguration> parseCommandLine(int argc, char* argv[]) {
         fmt::print("\tva: the visibility angle [deg] beyond which a view is not counted.\n");
         return {};
     }
+
     cmdl(1, cfg.meshfile) >> cfg.meshfile;
+    cmdl(2, cfg.outputDir) >> cfg.outputDir;
+    cfg.outputDir = cfg.outputDir + "/";
+
     cmdl("p", cfg.mapPitch) >> cfg.mapPitch;
     cmdl("x", cfg.landingSiteX) >> cfg.landingSiteX;
     cmdl("y", cfg.landingSiteY) >> cfg.landingSiteY;
@@ -51,6 +57,7 @@ std::optional<PlannerConfiguration> parseCommandLine(int argc, char* argv[]) {
     cmdl("np", cfg.numProbes) >> cfg.numProbes;
     cmdl("nc", cfg.numCandidates) >> cfg.numCandidates;
     cmdl("nv", cfg.numVantages) >> cfg.numVantages;
+    cmdl("va", cfg.visAngle) >> cfg.visAngle;
     return std::make_optional(cfg);
 }
 
@@ -299,7 +306,7 @@ generateVantageCandidates(const TerrainMesh& tmesh,
                 double hitDist = std::sqrt((ray.oX-hit->x)*(ray.oX-hit->x) +
                                            (ray.oY-hit->y)*(ray.oY-hit->y) +
                                            (ray.oZ-hit->z)*(ray.oZ-hit->z));
-                if( hitAngle < visAngle && std::abs(rayNorm-hitDist) < 0.05*rayNorm ) {
+                if( hitAngle < visAngle && hitDist < 500 && std::abs(rayNorm-hitDist) < 0.05*rayNorm ) {
                     candidate.coverage[pi] = true;
                     candidate.totalCoverage += p.priority;
                 }
@@ -314,10 +321,10 @@ generateVantageCandidates(const TerrainMesh& tmesh,
 
 std::vector<Vantage> selectVantages(const std::vector<Vantage>& candidates,
                                     const std::vector<Probe>& probes,
-                                    int numVantages) {
+                                    int numVantages, double minSeparation=10.0) {
 
     std::vector<Vantage> vantages;
-    std::set<int> taken;
+    std::unordered_set<int> taken;
     std::vector<unsigned char> visCounters(probes.size(), 0);
 
     // Make k selections. Choose the candidate that produces the greatest *new* coverage.
@@ -329,15 +336,30 @@ std::vector<Vantage> selectVantages(const std::vector<Vantage>& candidates,
         #pragma omp parallel for
         for(int ci=0; ci<candidates.size(); ++ci) {
             if( taken.contains(ci) ) { continue; }
+            const auto& c = candidates[ci];
+
+            // If this candidate is too close to one
+            // that has already been selected, skip it.
+            bool tooClose = false;
+            for(const auto& ti : taken) {
+                const auto& t = candidates[ti];
+                double d2 = (t.x-c.x)*(t.x-c.x)+(t.y-c.y)*(t.y-c.y)+(t.z-c.z);
+                if( d2 < minSeparation*minSeparation ) {
+                    tooClose = true;
+                    break;
+                }
+            }
+            if( tooClose ) { continue; }
+
             for(int pi=0; pi<probes.size(); ++pi) {
-                if( !candidates[ci].coverage[pi] ) { continue; }
+                if( !c.coverage[pi] ) { continue; }
 
                 if( visCounters[pi] == 0 ) {
-                    scores[ci] += 1.2 * probes[pi].priority;
-                } else if( visCounters[pi] == 1 ) {
                     scores[ci] += 1.0 * probes[pi].priority;
+                } else if( visCounters[pi] == 1 ) {
+                    scores[ci] += 0.8 * probes[pi].priority;
                 } else if( visCounters[pi] == 2 ) {
-                    scores[ci] += 0.01 * probes[pi].priority;
+                    scores[ci] += 0.05 * probes[pi].priority;
                 }
             }
         }
@@ -404,11 +426,14 @@ TerrainMap buildCoverageMap(const TerrainMesh& tmesh, const TerrainMap& elevatio
     for(const auto& v : vantages) {
         int i = coverageMap.yCoordToGridIndex(v.y);
         int j = coverageMap.xCoordToGridIndex(v.x);
-        coverageMap(i,j) = vantages.size()+1;
-        if( i+1 < coverageMap.rows) { coverageMap(i+1,j) = vantages.size()+1; }
-        if( i-1 >= 0 ) { coverageMap(i-1,j) = vantages.size()+1; }
-        if( j+1 < coverageMap.cols ) { coverageMap(i,j+1) = vantages.size()+1; }
-        if( j-1 >= 0 ) { coverageMap(i,j-1) = vantages.size()+1; }
+        int R = 2.0 / coverageMap.pitch;
+        for(int ii=-R; ii<=R; ++ii) {
+            for(int jj=-R; jj<=R; ++jj) {
+                if( ii*ii + jj*jj <= R*R ) {
+                    coverageMap(i+ii,j+jj) = 2*vantages.size();
+                }
+            }
+        }
     }
     return coverageMap;
 }
@@ -445,32 +470,32 @@ int main(int argc, char* argv[]) {
     // Construct elevation, slope, and priority maps.
     auto [elevationMap, slopeMap, priorityMap] = buildTerrainMaps(tmesh, config->mapPitch);
     slopeMap = blur(slopeMap);
-    elevationMap.savePFM("elevation.pfm");
-    slopeMap.savePFM("slope.pfm");
-    priorityMap.savePFM("priority.pfm");
+    elevationMap.saveEXR(config->outputDir+"elevation.exr");
+    slopeMap.saveEXR(config->outputDir+"slope.exr");
+    priorityMap.saveEXR(config->outputDir+"priority.exr");
 
     // Construct lander communications map.
     TerrainMap commsMap = buildCommsMap(tmesh, elevationMap,
                                             config->landingSiteX, config->landingSiteY,
                                             config->landerHeight, config->roverHeight);
-    commsMap.savePFM("comms.pfm");
+    commsMap.saveEXR(config->outputDir+"comms.exr");
 
     // Map low-slope, communicable terrain.
     const auto safeMap = buildSafeMap(commsMap, slopeMap, config->roverMaxSlope);
-    safeMap.savePFM("safe.pfm");
+    safeMap.saveEXR(config->outputDir+"safe.exr");
 
     // Flood-fill reachable safe terrain.
     TerrainMap reachMap = buildReachabilityMap(safeMap, config->landingSiteX, config->landingSiteY, 13);
-    reachMap.savePFM("reach.pfm");
+    reachMap.saveEXR(config->outputDir+"reach.exr");
 
     // Generate visibility probes.
     auto [probes, probeMap] = generateVisibilityProbes(priorityMap, elevationMap, config->numProbes, config->roverHeight);
-    probeMap.savePFM("probes.pfm");
+    probeMap.saveEXR(config->outputDir+"probes.exr");
 
     // Generate candidate vantages.
     auto [candidates, candidateMap] = generateVantageCandidates(tmesh, reachMap, elevationMap, probes,
                                                                 config->numCandidates, config->roverHeight, config->visAngle);
-    candidateMap.savePFM("candidates.pfm");
+    candidateMap.saveEXR(config->outputDir+"candidates.exr");
 
     // Select the best vantages from all of the candidates.
     auto vantages = selectVantages(candidates, probes, config->numVantages);
@@ -481,16 +506,29 @@ int main(int argc, char* argv[]) {
         int j = vantageMap.xCoordToGridIndex(v.x);
         int i = vantageMap.yCoordToGridIndex(v.y);
         double markerValue = 120 + 10 * v.totalCoverage / maxCoverage;
-        vantageMap(i,j) = markerValue;
-        if( i+1 < vantageMap.rows) { vantageMap(i+1,j) = markerValue; }
-        if( i-1 >= 0 ) { vantageMap(i-1,j) = markerValue; }
-        if( j+1 < vantageMap.cols ) { vantageMap(i,j+1) = markerValue; }
-        if( j-1 >= 0 ) { vantageMap(i,j-1) = markerValue; }
+        int R = 2.0 / config->mapPitch;
+        for(int ii=-R; ii<=R; ++ii) {
+            for(int jj=-R; jj<=R; ++jj) {
+                if( ii*ii + jj*jj <= R*R ) {
+                    vantageMap(i+ii,j+jj) = markerValue;
+                }
+            }
+        }
     }
-    vantageMap.savePFM("vantages.pfm");
+    vantageMap.saveEXR(config->outputDir+"vantages.exr");
+
+    // Save vantages to xyz file.
+    {
+        std::ofstream file;
+        file.open(config->outputDir+"vantages.xyz");
+        for(const auto& v : vantages) {
+            file << fmt::format("{} {} {}\n", v.x, v.y, v.z);
+        }
+        file.close();
+    }
 
     auto coverageMap = buildCoverageMap(tmesh, elevationMap, vantages, config->roverHeight, config->visAngle);
-    coverageMap.savePFM("coverage.pfm");
+    coverageMap.saveEXR(config->outputDir+"coverage.exr");
 
     for(int vi=0; vi<vantages.size(); ++vi) {
         std::vector<Vantage> tmp;
@@ -503,7 +541,7 @@ int main(int argc, char* argv[]) {
         if( i-1 >= 0 ) { coverageMap(i-1,j) = vantages.size()+1; }
         if( j+1 < coverageMap.cols ) { coverageMap(i,j+1) = vantages.size()+1; }
         if( j-1 >= 0 ) { coverageMap(i,j-1) = vantages.size()+1; }
-        coverageMap.savePFM(fmt::format("coverage_{:02}.pfm",vi));
+        coverageMap.saveEXR(config->outputDir+fmt::format("coverage_{:02}.exr",vi));
     }
 
     // Compute paths between all pairs of k vantages plus the landing site.
