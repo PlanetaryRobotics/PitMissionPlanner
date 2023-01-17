@@ -593,14 +593,14 @@ Path pathplan(const TerrainMap& slopeMap, const TerrainMap& reachMap,
 }
 
 std::vector<Vantage> routeplan(const std::vector<Vantage> allSites, const Eigen::MatrixXd& dists) {
-    std::vector<Vantage> route;
+    std::vector<int> routeIndices;
     std::vector<bool> visited(allSites.size(), false);
     int visitedCount = 1;
 
     int currentIdx = 0;
-    Vantage current = allSites[currentIdx];
     visited[currentIdx] = true;
-    route.push_back(current);
+    routeIndices.push_back(currentIdx);
+    double routeLength = 0;
 
     while(visitedCount < allSites.size()) {
         int closestIdx = 0;
@@ -613,10 +613,55 @@ std::vector<Vantage> routeplan(const std::vector<Vantage> allSites, const Eigen:
             }
         }
         currentIdx = closestIdx;
-        route.push_back(allSites[closestIdx]);
+        routeIndices.push_back(closestIdx);
         visited[closestIdx] = true;
+        routeLength += closestDist;
         visitedCount++;
     }
+
+    // Two-Opt Route Improvement
+    int iterations = 0;
+    bool improved = false;
+    do {
+        fmt::print("Improving route [{}] ...\n", iterations);
+        fmt::print("Route Length: {}\n", routeLength);
+        improved = false;
+        for(int i=1; i<routeIndices.size()-1; ++i) {
+            for(int j=i+1; j<routeIndices.size(); ++j) {
+                std::vector<int> newIndices;
+
+                // Take route[0] to route[i-1] and add them to the new route.
+                for(int k=0; k<=i-1; ++k) {
+                    newIndices.push_back(routeIndices[k]);
+                }
+                // Take route[i] to route[j] and add them in reverse order.
+                for(int k=j; k>=i; --k) {
+                    newIndices.push_back(routeIndices[k]);
+                }
+                // Take route[j+1] to the end and add them to the new route.
+                for(int k=j+1; k<routeIndices.size(); ++k) {
+                    newIndices.push_back(routeIndices[k]);
+                }
+                // Calculate the length of the new route.
+                double dist = 0;
+                for(int i=0; i<newIndices.size()-1; ++i) {
+                    dist += dists(newIndices[i], newIndices[i+1]);
+                }
+                fmt::print("Swap {:2}<->{:2} Length: {}\n", i,j, dist);
+                // This route is shorter! Keep it.
+                if( dist < routeLength ) {
+                    fmt::print("Found a better answer!\n");
+                    routeLength = dist;
+                    routeIndices = newIndices;
+                    improved = true;
+                }
+            }
+        }
+    } while( improved && iterations++ < 100 );
+
+    std::vector<Vantage> route;
+    for(const auto& ri : routeIndices) { route.push_back(allSites[ri]); }
+
     return route;
 }
 
@@ -782,7 +827,7 @@ int main(int argc, char* argv[]) {
         int h1 = pp.second.i*COLS + pp.second.j;
         return h0*ROWS*COLS + h1;
     };
-    ska::flat_hash_map<PointPair, Path, decltype(hashPointPair)> paths(10, hashPointPair);
+    ska::flat_hash_map<PointPair, Path, decltype(hashPointPair)> pathLookup(10, hashPointPair);
     Vantage landingSite {.x = landingSiteX, .y = landingSiteY, .z = landingSiteZ, .totalCoverage = 0.0};
 
     // Sort vantages counterclockwise around their centroid.
@@ -795,40 +840,34 @@ int main(int argc, char* argv[]) {
     allSites.push_back(landingSite);
     allSites.insert(std::end(allSites), std::begin(vantages), std::end(vantages));
 
+    // Generate all combinations of two indices into the allSites vector.
+    std::vector<std::pair<int,int>> allPairIndices;
     for(int a=0; a<allSites.size(); ++a) {
-        TerrainMap pathMap = vantageMap;
-        pathMap.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
-
-        #pragma omp parallel for
         for(int b=a+1; b<allSites.size(); ++b) {
-            Path::Point start, goal;
-            start.i = slopeMap.yCoordToGridIndex(allSites[a].y);
-            start.j = slopeMap.xCoordToGridIndex(allSites[a].x);
-
-            goal.i = slopeMap.yCoordToGridIndex(allSites[b].y);
-            goal.j = slopeMap.xCoordToGridIndex(allSites[b].x);
-
-            Path path = pathplan(slopeMap, reachMap, start, goal);
-            #pragma omp critical
-            {
-                paths[std::make_pair(start, goal)] = path;
-                paths[std::make_pair(goal, start)] = reverse(path);
-
-                fmt::print("site {:02} -> site {:02} @ {:0.2f}\n", a, b, path.cost);
-
-                costs(a,b) = path.cost;
-                costs(b,a) = path.cost;
-                dists(a,b) = path.dist;
-                dists(b,a) = path.dist;
-
-                if( path.cost > 0 ) {
-                    for(const auto& p : path.waypoints) {
-                        pathMap(p.i, p.j) = 100;
-                    }
-                }
-            }
+            allPairIndices.push_back(std::make_pair(a,b));
         }
-        pathMap.saveEXR(config->outputDir+fmt::format("paths_{:02}.exr", a)); 
+    }
+
+    #pragma omp parallel for
+    for(int i=0; i<allPairIndices.size(); ++i) {
+        auto [a, b] = allPairIndices[i];
+        fmt::print("Planning path from {:2} to {:2} [{}/{}]\n", a, b, i, allPairIndices.size());
+
+        Path::Point start, goal;
+        start.i = slopeMap.yCoordToGridIndex(allSites[a].y);
+        start.j = slopeMap.xCoordToGridIndex(allSites[a].x);
+        goal.i = slopeMap.yCoordToGridIndex(allSites[b].y);
+        goal.j = slopeMap.xCoordToGridIndex(allSites[b].x);
+
+        const auto path = pathplan(slopeMap, reachMap, start, goal);
+
+        pathLookup[std::make_pair(start, goal)] = path;
+        pathLookup[std::make_pair(goal, start)] = reverse(path);
+
+        costs(a,b) = path.cost;
+        costs(b,a) = path.cost;
+        dists(a,b) = path.dist;
+        dists(b,a) = path.dist;
     }
 
     // Compute exploration route.
@@ -845,7 +884,7 @@ int main(int argc, char* argv[]) {
         p0.j = routeMap.xCoordToGridIndex(v0.x);
         p1.i = routeMap.yCoordToGridIndex(v1.y);
         p1.j = routeMap.xCoordToGridIndex(v1.x);
-        Path path = paths[std::make_pair(p0, p1)];
+        Path path = pathLookup[std::make_pair(p0, p1)];
         for(const auto& p : path.waypoints) {
             routeMap(p.i, p.j) = 100;
         }
