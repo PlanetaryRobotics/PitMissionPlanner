@@ -195,8 +195,8 @@ TerrainMap buildCommsMap(const TerrainMesh& tmesh,
     const double landerY = siteY;
     const double landerZ = elevationMap(li, lj) + landerHeight;
 
-    for(int ri=0; ri<commsMap.cols; ++ri) {
-        for(int rj=0; rj<commsMap.rows; ++rj) {
+    for(int ri=0; ri<commsMap.rows; ++ri) {
+        for(int rj=0; rj<commsMap.cols; ++rj) {
             TerrainMesh::Ray ray;
             const double roverX = elevationMap.gridIndexToXCoord(rj);
             const double roverY = elevationMap.gridIndexToYCoord(ri);
@@ -710,6 +710,16 @@ int main(int argc, char* argv[]) {
     double landingSiteX = config->landingSiteX;
     double landingSiteY = config->landingSiteY;
     double landingSiteZ = elevationMap.atXY(landingSiteX, landingSiteY);
+
+    int landingSiteI = elevationMap.yCoordToGridIndex(landingSiteY);
+    int landingSiteJ = elevationMap.xCoordToGridIndex(landingSiteX);
+
+    if( landingSiteI < 0 || landingSiteI >= elevationMap.cols ||
+        landingSiteJ < 0 || landingSiteJ >= elevationMap.rows ) {
+        throw std::runtime_error(
+            fmt::format("Landing site at ({}, {}) is outside of map boundaries.",
+                        landingSiteX, landingSiteY));
+    }
 
     // Construct lander communications map.
     TerrainMap commsMap = buildCommsMap(tmesh, elevationMap,
