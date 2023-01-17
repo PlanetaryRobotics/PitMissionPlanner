@@ -516,7 +516,7 @@ Path pathplan(const TerrainMap& slopeMap, const TerrainMap& reachMap,
     auto getCost = [&slopeMap, &getHeuristic](const Path::Point& a, const Path::Point& b) -> double {
         const double slope = slopeMap(b.i, b.j);
         const double octileDistance = slopeMap.pitch * getHeuristic(a, b);
-        return 4 * slope / 90.0 + octileDistance;
+        return 8 * slope / 90.0 + octileDistance;
     };
 
     // Initialize the search.
@@ -627,6 +627,21 @@ std::vector<Vantage> routeplan(const std::vector<Vantage> allSites, const Eigen:
         fmt::print("Route Length: {}\n", routeLength);
         improved = false;
         for(int i=1; i<routeIndices.size()-1; ++i) {
+
+            // Don't rewire the segment 0<->1 because that segment
+            // connects the landing site to the closest vantage.
+            if( i== 1 ) { continue; }
+
+            // NOTES (Jordan):
+            // There is a tension here.
+            // On the one hand, we want a short total path.
+            // On the other hand, we want to visit vantages *early*.
+            // I think we should apply a discount factor that values
+            // vantages less if they are visited later in time.
+            // Then we want a short route that captures the most
+            // discounted coverage. I guess the discount factor will be
+            // a configurable parameter.
+
             for(int j=i+1; j<routeIndices.size(); ++j) {
                 std::vector<int> newIndices;
 
@@ -647,9 +662,9 @@ std::vector<Vantage> routeplan(const std::vector<Vantage> allSites, const Eigen:
                 for(int i=0; i<newIndices.size()-1; ++i) {
                     dist += dists(newIndices[i], newIndices[i+1]);
                 }
-                fmt::print("Swap {:2}<->{:2} Length: {}\n", i,j, dist);
                 // This route is shorter! Keep it.
                 if( dist < routeLength ) {
+                    fmt::print("[{}] Swap {:2}<->{:2} Length: {}\n", iterations, i,j, dist);
                     fmt::print("Found a better answer!\n");
                     routeLength = dist;
                     routeIndices = newIndices;
@@ -746,7 +761,7 @@ int main(int argc, char* argv[]) {
         file.open(config->outputDir+"sites.xyz");
         file << fmt::format("{} {} {}\n", landingSiteX, landingSiteY, landingSiteZ);
         for(const auto& v : vantages) {
-            file << fmt::format("{} {} {}\n", v.x, v.y, v.z);
+            file << fmt::format("{} {} {}\n", v.x, v.y, v.z + config->roverHeight);
         }
         file.close();
     }
@@ -890,6 +905,30 @@ int main(int argc, char* argv[]) {
         }
     }
     routeMap.saveEXR(config->outputDir+"route.exr"); 
+
+    // Save route to xyz file.
+    {
+        std::ofstream file;
+        file.open(config->outputDir+"route.xyz");
+        for(int i=0; i<route.size()-1; ++i) {
+            Vantage v0 = route[i]; 
+            Vantage v1 = route[i+1]; 
+            Path::Point p0, p1;
+            p0.i = routeMap.yCoordToGridIndex(v0.y);
+            p0.j = routeMap.xCoordToGridIndex(v0.x);
+            p1.i = routeMap.yCoordToGridIndex(v1.y);
+            p1.j = routeMap.xCoordToGridIndex(v1.x);
+            Path path = pathLookup[std::make_pair(p0, p1)];
+            for(const auto& p : path.waypoints) {
+                Vantage v;
+                v.x = elevationMap.gridIndexToXCoord(p.j);
+                v.y = elevationMap.gridIndexToXCoord(p.i);
+                v.z = elevationMap(p.i, p.j) + config->roverHeight;
+                file << fmt::format("{} {} {}\n", v.x, v.y, v.z);
+            }
+        }
+        file.close();
+    }
 
     return 0;
 }
