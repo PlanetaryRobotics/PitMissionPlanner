@@ -1,6 +1,9 @@
 #include "terrainmesh.h"
 #include "terrainmap.h"
 #include "argh.h"
+#include "flat_hash_map.hpp"
+#include "priority_queue.h"
+#include <Eigen/Dense>
 #include <fmt/format.h>
 #include <optional>
 #include <unordered_set>
@@ -8,18 +11,19 @@
 
 
 struct PlannerConfiguration {
-    std::string meshfile  = "../meshes/lmp_science_small.ply";
-    std::string outputDir = "./";
-    double mapPitch       = 1.0;
-    double landingSiteX   = 380;
-    double landingSiteY   = 500;
-    double landerHeight   = 3.0;
-    double roverHeight    = 1.0;
-    double roverMaxSlope  = 20.0;
-    int    numProbes      = 10000;
-    int    numCandidates  = 10000;
-    int    numVantages    = 15;
-    double visAngle       = 55;
+    std::string meshfile   = "../meshes/lmp.ply";
+    std::string outputDir  = "./";
+    double mapPitch        = 1.0;       // meters
+    double landingSiteX    = 750;       // meters
+    double landingSiteY    = 400;       // meters
+    double landerHeight    = 3.0;       // meters
+    double roverHeight     = 1.0;       // meters
+    double roverMaxSlope   = 20.0;      // degrees
+    double roverSpeed      = 0.01;      // m/s
+    int    numProbes       = 10000;     // 
+    int    numCandidates   = 10000;     // 
+    int    numVantages     = 15;        // 
+    double visAngle        = 55;        // degrees
 };
 
 std::optional<PlannerConfiguration> parseCommandLine(int argc, char* argv[]) {
@@ -438,24 +442,196 @@ TerrainMap buildCoverageMap(const TerrainMesh& tmesh, const TerrainMap& elevatio
     return coverageMap;
 }
 
-TerrainMap blur(const TerrainMap& map, int W_2=1) {
-    TerrainMap m(map.width(), map.height(), map.pitch);
-    for(int i=0; i<m.rows; ++i) {
-        for(int j=0; j<m.cols; ++j) {
-            float sum = 0;
-            int count = 0;
-            for(int ii=-W_2; ii<=W_2; ++ii) {
-                if( i+ii < 0 || i+ii >= m.rows ) { continue; }
-                for(int jj=-W_2; jj<=W_2; ++jj) {
-                    if( j+jj < 0 || j+jj >= m.cols ) { continue; }
-                    sum += map(i+ii, j+jj);
-                    count++;
-                }
-                m(i,j) = sum/count;
+struct Path {
+    struct Point {
+        int i = 0;
+        int j = 0;
+        bool operator==(const Point& rhs) const {
+            return rhs.i==i && rhs.j==j;
+        }
+    };
+    std::vector<Point> waypoints;
+
+    double cost = 0.0;
+    double dist = 0.0;
+};
+
+Path reverse(const Path& path) {
+    Path rPath = path;
+    std::reverse(rPath.waypoints.begin(), rPath.waypoints.end());
+    return rPath;
+}
+
+Path pathplan(const TerrainMap& slopeMap, const TerrainMap& reachMap,
+              const Path::Point& start, const Path::Point& goal) {
+
+    int ROWS = slopeMap.rows;
+    int COLS = slopeMap.cols;
+
+    // Construct planning datastructures.
+    auto pointHash = [COLS](const Path::Point& p) { return p.i*COLS + p.j; };
+    ska::flat_hash_set<Path::Point, decltype(pointHash)> closed(10, pointHash);
+    PriorityQueue<Path::Point, double> open;
+
+    struct NodeData {
+        Path::Point pred;
+        double gscore;
+    };
+    ska::flat_hash_map<Path::Point, NodeData, decltype(pointHash)> nodeMap(10, pointHash);
+
+    // Define the planning heuristic.
+    auto getHeuristic = [](const Path::Point& a, const Path::Point& b) -> double {
+        // Branchless octile distance
+        int di = std::abs(a.i-b.i);
+        int dj = std::abs(a.j-b.j);
+        constexpr double diagonal = std::sqrt(2);
+        constexpr double twoCardinalMinusDiagonal = 2-diagonal;
+        return (twoCardinalMinusDiagonal*abs(di-dj) + diagonal*(di+dj)) / 2;
+    };
+
+    // Generate the successors of a node.
+    auto getSuccessors = [ROWS, COLS, &reachMap](const Path::Point& p) -> std::vector<Path::Point> {
+        std::vector<Path::Point> succs; succs.reserve(8);
+        if( p.i+1 < ROWS && reachMap(p.i+1, p.j) ) { succs.push_back( Path::Point { .i = p.i+1, .j = p.j } ); }
+        if( p.i-1 >= 0   && reachMap(p.i+1, p.j) ) { succs.push_back( Path::Point { .i = p.i-1, .j = p.j } ); }
+        if( p.j+1 < COLS && reachMap(p.i+1, p.j) ) { succs.push_back( Path::Point { .i = p.i, .j = p.j+1 } ); }
+        if( p.j-1 >= 0   && reachMap(p.i+1, p.j) ) { succs.push_back( Path::Point { .i = p.i, .j = p.j-1 } ); }
+
+        if( p.i+1 < ROWS && p.j+1 < COLS && reachMap(p.i+1, p.j+1) ) {
+            succs.push_back( Path::Point { .i = p.i+1, .j = p.j+1 } );
+        }
+        if( p.i-1 >= 0 && p.j-1 >= 0 && reachMap(p.i-1, p.j-1) ) {
+            succs.push_back( Path::Point { .i = p.i-1, .j = p.j-1 } );
+        }
+        if( p.i+1 < ROWS && p.j-1 >= 0 && reachMap(p.i+1, p.j-1) ) {
+            succs.push_back( Path::Point { .i = p.i+1, .j = p.j-1 } );
+        }
+        if( p.i-1 >= 0 && p.j+1 < COLS && reachMap(p.i-1, p.j+1) ) {
+            succs.push_back( Path::Point { .i = p.i-1, .j = p.j+1 } );
+        }
+        return succs; 
+    };
+
+    // Compute the cost to travel from one point to another.
+    auto getCost = [&slopeMap, &getHeuristic](const Path::Point& a, const Path::Point& b) -> double {
+        const double slope = slopeMap(b.i, b.j);
+        const double octileDistance = slopeMap.pitch * getHeuristic(a, b);
+        return 4 * slope / 90.0 + octileDistance;
+    };
+
+    // Initialize the search.
+    double h = getHeuristic(start, goal);
+    open.insert(start, h);
+
+    nodeMap[start].pred = start;
+    nodeMap[start].gscore = 0.0;
+
+    // Perform the search.
+    bool success = false;
+    while( true )
+    {
+        // The goal is unreachable.
+        if( open.empty() ) { success = false; break; }
+
+        const Path::Point currPoint = open.top();
+        open.pop();
+
+        // If you have expanded this state before, skip it.
+        if( closed.find(currPoint) != closed.end() ) { continue; }
+
+        // Otherwise, add it to closed and expand it.
+        closed.insert(currPoint);
+
+        // If this state is the goal, quit searching!
+        if( currPoint == goal ) {
+            success = true;
+            break;
+        }
+
+        // Since we can't end the search yet, let's look
+        // up some info on the current point and keep working.
+        const double currG = nodeMap[currPoint].gscore;
+
+        // Examine each successor of currPoint.
+        const auto succs = getSuccessors(currPoint);
+        for(const auto& succ : succs) {
+            const double succCost = getCost(currPoint, succ);
+            const double tentativeG = currG + succCost;
+
+            if( nodeMap.find(succ) == nodeMap.end() ||
+                tentativeG < nodeMap.at(succ).gscore ) {
+                double h = getHeuristic(succ, goal);
+                double f = tentativeG + h;
+                open.insert(succ, f);
+
+                nodeMap[succ].pred = currPoint;
+                nodeMap[succ].gscore = tentativeG;
             }
         }
     }
-    return m;
+
+    Path path;
+    if( !success ) { 
+        path.cost = -1;
+        path.dist = -1;
+        return path;
+    }
+
+    Path::Point state = goal;
+    while( !(state == start) ) {
+        path.waypoints.push_back(state);
+        Path::Point pred = nodeMap[state].pred;
+        path.dist += std::sqrt((pred.i-state.i)*(pred.i-state.i)+(pred.j-state.j)*(pred.j-state.j));
+        state = pred;
+    }
+    path.waypoints.push_back(start);
+    path.cost = nodeMap[goal].gscore;
+
+    path = reverse(path);
+
+    return path;
+}
+
+std::vector<Vantage> routeplan(const std::vector<Vantage> allSites, const Eigen::MatrixXd& dists) {
+    std::vector<Vantage> route;
+    std::vector<bool> visited(allSites.size(), false);
+    int visitedCount = 1;
+
+    int currentIdx = 0;
+    Vantage current = allSites[currentIdx];
+    visited[currentIdx] = true;
+    route.push_back(current);
+
+    while(visitedCount < allSites.size()) {
+        int closestIdx = 0;
+        double closestDist = std::numeric_limits<double>::infinity();
+        for(int i=0; i<dists.rows(); ++i) {
+            const auto dist = dists(currentIdx, i);
+            if( !visited[i] && dist >= 0 && dist < closestDist ) {
+                closestIdx = i;
+                closestDist = dist;
+            }
+        }
+        currentIdx = closestIdx;
+        route.push_back(allSites[closestIdx]);
+        visited[closestIdx] = true;
+        visitedCount++;
+    }
+    return route;
+}
+
+// Sort vantages by their angle relative to (siteX, siteY).
+std::vector<Vantage> sortCCW(const std::vector<Vantage> vantages, double siteX, double siteY) {
+    std::vector<Vantage> sorted = vantages;
+    auto angle = [siteX, siteY](const Vantage& v0, const Vantage& v1) {
+        double aX = v0.x-siteX;
+        double aY = v0.y-siteY;
+        double bX = v1.x-siteX;
+        double bY = v1.y-siteY;
+        return std::atan2(aY, aX) < std::atan2(bY, bX);
+    };
+    std::sort(sorted.begin(), sorted.end(), angle);
+    return sorted;
 }
 
 int main(int argc, char* argv[]) {
@@ -469,18 +645,22 @@ int main(int argc, char* argv[]) {
 
     // Construct elevation, slope, and priority maps.
     auto [elevationMap, slopeMap, priorityMap] = buildTerrainMaps(tmesh, config->mapPitch);
-    slopeMap = blur(slopeMap);
+
+    // Compute landing site coordinates.
+    double landingSiteX = config->landingSiteX;
+    double landingSiteY = config->landingSiteY;
+    double landingSiteZ = elevationMap.atXY(landingSiteX, landingSiteY);
 
     // Construct lander communications map.
     TerrainMap commsMap = buildCommsMap(tmesh, elevationMap,
-                                            config->landingSiteX, config->landingSiteY,
+                                            landingSiteX, landingSiteY,
                                             config->landerHeight, config->roverHeight);
 
     // Map low-slope, communicable terrain.
     const auto safeMap = buildSafeMap(commsMap, slopeMap, config->roverMaxSlope);
 
     // Flood-fill reachable safe terrain.
-    TerrainMap reachMap = buildReachabilityMap(safeMap, config->landingSiteX, config->landingSiteY, 13);
+    TerrainMap reachMap = buildReachabilityMap(safeMap, landingSiteX, landingSiteY, 13);
 
     // Generate visibility probes.
     auto [probes, probeMap] = generateVisibilityProbes(priorityMap, elevationMap, config->numProbes, config->roverHeight);
@@ -491,18 +671,22 @@ int main(int argc, char* argv[]) {
 
     // Select the best vantages from all of the candidates.
     auto vantages = selectVantages(candidates, probes, config->numVantages);
+
+    // Construct the vantageMap.
     auto vantageMap = slopeMap;
-    double maxCoverage = 0;
-    for(const auto& v : vantages) { maxCoverage = std::max(maxCoverage, v.totalCoverage); }
-    for(const auto& v : vantages) {
-        int j = vantageMap.xCoordToGridIndex(v.x);
-        int i = vantageMap.yCoordToGridIndex(v.y);
-        double markerValue = 120 + 10 * v.totalCoverage / maxCoverage;
-        int R = 2.0 / config->mapPitch;
-        for(int ii=-R; ii<=R; ++ii) {
-            for(int jj=-R; jj<=R; ++jj) {
-                if( ii*ii + jj*jj <= R*R ) {
-                    vantageMap(i+ii,j+jj) = markerValue;
+    {
+        double maxCoverage = 0;
+        for(const auto& v : vantages) { maxCoverage = std::max(maxCoverage, v.totalCoverage); }
+        for(const auto& v : vantages) {
+            int j = vantageMap.xCoordToGridIndex(v.x);
+            int i = vantageMap.yCoordToGridIndex(v.y);
+            double markerValue = 120 + 10 * v.totalCoverage / maxCoverage;
+            int R = 2.0 / config->mapPitch;
+            for(int ii=-R; ii<=R; ++ii) {
+                for(int jj=-R; jj<=R; ++jj) {
+                    if( ii*ii + jj*jj <= R*R ) {
+                        vantageMap(i+ii,j+jj) = markerValue;
+                    }
                 }
             }
         }
@@ -511,10 +695,11 @@ int main(int argc, char* argv[]) {
     // Map combined coverage from all vantages.
     auto coverageMap = buildCoverageMap(tmesh, elevationMap, vantages, config->roverHeight, config->visAngle);
 
-    // Save vantages to xyz file.
+    // Save landing site and vantages to xyz file.
     {
         std::ofstream file;
-        file.open(config->outputDir+"vantages.xyz");
+        file.open(config->outputDir+"sites.xyz");
+        file << fmt::format("{} {} {}\n", landingSiteX, landingSiteY, landingSiteZ);
         for(const auto& v : vantages) {
             file << fmt::format("{} {} {}\n", v.x, v.y, v.z);
         }
@@ -525,52 +710,52 @@ int main(int argc, char* argv[]) {
     {
         {
             auto map = elevationMap;
-            map.drawCircle(config->landingSiteX, config->landingSiteY, 100, 4.0);
+            map.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
             map.saveEXR(config->outputDir+"elevation.exr");
         }
         {
             auto map = slopeMap;
-            map.drawCircle(config->landingSiteX, config->landingSiteY, 100, 4.0);
+            map.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
             map.saveEXR(config->outputDir+"slope.exr");
         }
         {
             auto map = priorityMap;
-            map.drawCircle(config->landingSiteX, config->landingSiteY, 10, 4.0);
+            map.drawCircle(landingSiteX, landingSiteY, 10, 4.0);
             map.saveEXR(config->outputDir+"priority.exr");
         }
         {
             auto map = reachMap;
-            map.drawCircle(config->landingSiteX, config->landingSiteY, 100, 4.0);
+            map.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
             map.saveEXR(config->outputDir+"reach.exr");
         }
         {
             auto map = commsMap;
-            map.drawCircle(config->landingSiteX, config->landingSiteY, 100, 4.0);
+            map.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
             map.saveEXR(config->outputDir+"comms.exr");
         }
         {
             auto map = safeMap;
-            map.drawCircle(config->landingSiteX, config->landingSiteY, 100, 4.0);
+            map.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
             map.saveEXR(config->outputDir+"safe.exr");
         }
         {
             auto map = probeMap;
-            map.drawCircle(config->landingSiteX, config->landingSiteY, 100, 4.0);
+            map.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
             map.saveEXR(config->outputDir+"probes.exr");
         }
         {
             auto map = candidateMap;
-            map.drawCircle(config->landingSiteX, config->landingSiteY, 100, 4.0);
+            map.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
             map.saveEXR(config->outputDir+"candidates.exr");
         }
         {
             auto map = vantageMap;
-            map.drawCircle(config->landingSiteX, config->landingSiteY, 100, 4.0);
+            map.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
             map.saveEXR(config->outputDir+"vantages.exr");
         }
         {
             auto map = coverageMap;
-            map.drawCircle(config->landingSiteX, config->landingSiteY, 100, 4.0);
+            map.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
             map.saveEXR(config->outputDir+"coverage.exr");
         }
         for(int vi=0; vi<vantages.size(); ++vi) {
@@ -580,16 +765,92 @@ int main(int argc, char* argv[]) {
             int j = vantageMap.xCoordToGridIndex(vantages[vi].x);
             int i = vantageMap.yCoordToGridIndex(vantages[vi].y);
             coverageMap.drawCircle(vantages[vi].x, vantages[vi].y, vantages.size()+1, 3.0);
-            coverageMap.drawCircle(config->landingSiteX, config->landingSiteY, vantages.size()+10, 4.0);
+            coverageMap.drawCircle(landingSiteX, landingSiteY, vantages.size()+10, 4.0);
             coverageMap.saveEXR(config->outputDir+fmt::format("coverage_{:02}.exr",vi));
         }
     }
 
     // Compute paths between all pairs of k vantages plus the landing site.
+    Eigen::MatrixXd costs(vantages.size()+1, vantages.size()+1); costs.fill(-1);
+    Eigen::MatrixXd dists(vantages.size()+1, vantages.size()+1); dists.fill(-1);
+
+    using PointPair = std::pair<Path::Point, Path::Point>;
+    auto hashPointPair = [&elevationMap](const PointPair& pp) {
+        int ROWS = elevationMap.rows;
+        int COLS = elevationMap.cols;
+        int h0 = pp.first.i*COLS + pp.first.j;
+        int h1 = pp.second.i*COLS + pp.second.j;
+        return h0*ROWS*COLS + h1;
+    };
+    ska::flat_hash_map<PointPair, Path, decltype(hashPointPair)> paths(10, hashPointPair);
+    Vantage landingSite {.x = landingSiteX, .y = landingSiteY, .z = landingSiteZ, .totalCoverage = 0.0};
+
+    // Sort vantages counterclockwise around their centroid.
+    double centroidX = 0; double centroidY = 0;
+    for(const auto& v : vantages) { centroidX += v.x; centroidY += v.y; }
+    centroidX /= vantages.size(); centroidY /= vantages.size();
+    vantages = sortCCW(vantages, centroidX, centroidY);
+
+    std::vector<Vantage> allSites;
+    allSites.push_back(landingSite);
+    allSites.insert(std::end(allSites), std::begin(vantages), std::end(vantages));
+
+    for(int a=0; a<allSites.size(); ++a) {
+        TerrainMap pathMap = vantageMap;
+        pathMap.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
+
+        #pragma omp parallel for
+        for(int b=a+1; b<allSites.size(); ++b) {
+            Path::Point start, goal;
+            start.i = slopeMap.yCoordToGridIndex(allSites[a].y);
+            start.j = slopeMap.xCoordToGridIndex(allSites[a].x);
+
+            goal.i = slopeMap.yCoordToGridIndex(allSites[b].y);
+            goal.j = slopeMap.xCoordToGridIndex(allSites[b].x);
+
+            Path path = pathplan(slopeMap, reachMap, start, goal);
+            #pragma omp critical
+            {
+                paths[std::make_pair(start, goal)] = path;
+                paths[std::make_pair(goal, start)] = reverse(path);
+
+                fmt::print("site {:02} -> site {:02} @ {:0.2f}\n", a, b, path.cost);
+
+                costs(a,b) = path.cost;
+                costs(b,a) = path.cost;
+                dists(a,b) = path.dist;
+                dists(b,a) = path.dist;
+
+                if( path.cost > 0 ) {
+                    for(const auto& p : path.waypoints) {
+                        pathMap(p.i, p.j) = 100;
+                    }
+                }
+            }
+        }
+        pathMap.saveEXR(config->outputDir+fmt::format("paths_{:02}.exr", a)); 
+    }
 
     // Compute exploration route.
+    std::vector<Vantage> route = routeplan(allSites, dists);
 
-    // Draw pretty pictures.
+    // Draw the final route!
+    TerrainMap routeMap = vantageMap;
+    routeMap.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
+    for(int i=0; i<route.size()-1; ++i) {
+        Vantage v0 = route[i]; 
+        Vantage v1 = route[i+1]; 
+        Path::Point p0, p1;
+        p0.i = routeMap.yCoordToGridIndex(v0.y);
+        p0.j = routeMap.xCoordToGridIndex(v0.x);
+        p1.i = routeMap.yCoordToGridIndex(v1.y);
+        p1.j = routeMap.xCoordToGridIndex(v1.x);
+        Path path = paths[std::make_pair(p0, p1)];
+        for(const auto& p : path.waypoints) {
+            routeMap(p.i, p.j) = 100;
+        }
+    }
+    routeMap.saveEXR(config->outputDir+"route.exr"); 
 
     return 0;
 }

@@ -22,6 +22,13 @@ public:
         return rows*pitch;
     }
 
+    double atIJ(int i, int j) const { return operator()(i,j); }
+    double atXY(double x, double y) const {
+        int j = xCoordToGridIndex(x);
+        int i = yCoordToGridIndex(y);
+        return operator()(i,j);
+    }
+
     double gridIndexToXCoord(size_t j) const { return pitch/2.0 + j*pitch; }
     double gridIndexToYCoord(size_t i) const { return pitch/2.0 + i*pitch; }
 
