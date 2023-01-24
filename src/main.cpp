@@ -11,12 +11,12 @@
 
 
 struct PlannerConfiguration {
-    std::string meshfile   = "../meshes/lmp.ply";
+    std::string meshfile   = "../meshes/lmp_crop.ply";
     std::string outputDir  = "./";
     double mapPitch        = 1.0;       // meters
-    double landingSiteX    = 750;       // meters
-    double landingSiteY    = 400;       // meters
-    double landerHeight    = 3.0;       // meters
+    double landingSiteX    = 100;       // meters
+    double landingSiteY    = 200;       // meters
+    double landerHeight    = 2.0;       // meters
     double roverHeight     = 1.0;       // meters
     double roverMaxSlope   = 20.0;      // degrees
     double roverSpeed      = 0.01;      // m/s
@@ -78,7 +78,7 @@ buildTerrainMaps(const TerrainMesh& tmesh, const double mapPitch) {
     const double minZ = tmesh.minZ();
 
     for(int i=0; i<slopeMap.rows; ++i) {
-        fmt::print("Building Terrain Maps [{}/{}]\n", i, slopeMap.rows);
+        fmt::print("[{}/{}] Building terrain maps.\n", i, slopeMap.rows);
         #pragma omp parallel for
         for(int j=0; j<slopeMap.cols; ++j) {
             TerrainMesh::Ray ray;
@@ -107,8 +107,8 @@ TerrainMap buildReachabilityMap(const TerrainMap& safeMap,
                                 double roverMaxSlope) {
     TerrainMap reachMap(safeMap.width(), safeMap.height(), safeMap.pitch);
 
-    int rows = safeMap.rows;
-    int cols = safeMap.cols;
+    int rows = reachMap.rows;
+    int cols = reachMap.cols;
 
     std::vector<bool> visited(rows*cols, false);
     int ri = safeMap.yCoordToGridIndex(siteY);
@@ -123,7 +123,7 @@ TerrainMap buildReachabilityMap(const TerrainMap& safeMap,
         open.pop_back();
 
         if( iterations++ % (1<<16) ) {
-            fmt::print("Building Reach Map {}\n", iterations);
+            fmt::print("[{}] Building reach map.\n", iterations);
         }
 
         if( visited[curr] ) { continue; }
@@ -285,11 +285,15 @@ generateVantageCandidates(const TerrainMesh& tmesh,
     }
 
     auto candidateMap = reachMap;
+    int progress = 0;
 
     // For every candidate, trace a ray to all view coverage probes.
-    #pragma omp parallel for
+    #pragma omp parallel for shared(progress)
     for(int ci=0; ci<candidates.size(); ++ci) {
-        fmt::print("Computing Visibility {:6d}/{:6d}\n", ci, candidates.size());
+        #pragma omp critical
+        {
+            fmt::print("[{}/{}] Constructing visibility map.\n", progress++, candidates.size());
+        }
         auto& candidate = candidates[ci];
         candidate.coverage.resize(probes.size());
 
@@ -333,7 +337,7 @@ std::vector<Vantage> selectVantages(const std::vector<Vantage>& candidates,
 
     // Make k selections. Choose the candidate that produces the greatest *new* coverage.
     for(int k = 0; k<numVantages; ++k) {
-        fmt::print("Selecting vantages {}/{}\n", k, numVantages);
+        fmt::print("[{}/{}] Selecting vantages.\n", k, numVantages);
 
         // Assign a score to every candidate.
         std::vector<float> scores(candidates.size(), 0.0f);
@@ -396,7 +400,7 @@ TerrainMap buildCoverageMap(const TerrainMesh& tmesh, const TerrainMap& elevatio
 
     for(int vi=0; vi<vantages.size(); ++vi) {
         auto& v = vantages[vi];
-        fmt::print("Generating Coverage Map: {}/{}\n", vi, vantages.size());
+        fmt::print("[{}/{}] Generating coverage maps.\n", vi, vantages.size());
         #pragma omp parallel for
         for(int ri=0; ri<coverageMap.cols; ++ri) {
             for(int rj=0; rj<coverageMap.rows; ++rj) {
@@ -624,7 +628,7 @@ std::vector<Vantage> routeplan(const std::vector<Vantage> allSites, const Eigen:
     bool improved = false;
     do {
         fmt::print("Improving route [{}] ...\n", iterations);
-        fmt::print("Route Length: {}\n", routeLength);
+        fmt::print("Route Length: {:0.2}\n", routeLength);
         improved = false;
         for(int i=1; i<routeIndices.size()-1; ++i) {
 
@@ -664,8 +668,7 @@ std::vector<Vantage> routeplan(const std::vector<Vantage> allSites, const Eigen:
                 }
                 // This route is shorter! Keep it.
                 if( dist < routeLength ) {
-                    fmt::print("[{}] Swap {:2}<->{:2} Length: {}\n", iterations, i,j, dist);
-                    fmt::print("Found a better answer!\n");
+                    fmt::print("[{}] Swap {:2}<->{:2} Length: {:0.2}\n", iterations, i,j, dist);
                     routeLength = dist;
                     routeIndices = newIndices;
                     improved = true;
@@ -714,11 +717,11 @@ int main(int argc, char* argv[]) {
     int landingSiteI = elevationMap.yCoordToGridIndex(landingSiteY);
     int landingSiteJ = elevationMap.xCoordToGridIndex(landingSiteX);
 
-    if( landingSiteI < 0 || landingSiteI >= elevationMap.cols ||
-        landingSiteJ < 0 || landingSiteJ >= elevationMap.rows ) {
+    if( landingSiteI < 0 || landingSiteI >= elevationMap.rows ||
+        landingSiteJ < 0 || landingSiteJ >= elevationMap.cols ) {
         throw std::runtime_error(
-            fmt::format("Landing site at ({}, {}) is outside of map boundaries.",
-                        landingSiteX, landingSiteY));
+            fmt::format("Landing site at ({}, {}) is outside of map boundaries ({}, {}).",
+                        landingSiteX, landingSiteY, elevationMap.height(), elevationMap.width()));
     }
 
     // Construct lander communications map.
@@ -730,7 +733,7 @@ int main(int argc, char* argv[]) {
     const auto safeMap = buildSafeMap(commsMap, slopeMap, config->roverMaxSlope);
 
     // Flood-fill reachable safe terrain.
-    TerrainMap reachMap = buildReachabilityMap(safeMap, landingSiteX, landingSiteY, 13);
+    TerrainMap reachMap = buildReachabilityMap(safeMap, landingSiteX, landingSiteY, config->roverMaxSlope);
 
     // Generate visibility probes.
     auto [probes, probeMap] = generateVisibilityProbes(priorityMap, elevationMap, config->numProbes, config->roverHeight);
@@ -873,10 +876,14 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    #pragma omp parallel for
+    int progress = 0;
+    #pragma omp parallel for shared(progress)
     for(int i=0; i<allPairIndices.size(); ++i) {
         auto [a, b] = allPairIndices[i];
-        fmt::print("Planning path from {:2} to {:2} [{}/{}]\n", a, b, i, allPairIndices.size());
+        #pragma omp critical(PRINT)
+        {
+            fmt::print("[{}/{}] Planning path from site {:2} to site {:2}.\n", progress++, allPairIndices.size(), a, b);
+        }
 
         Path::Point start, goal;
         start.i = slopeMap.yCoordToGridIndex(allSites[a].y);
