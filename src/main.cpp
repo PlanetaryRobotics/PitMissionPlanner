@@ -5,9 +5,12 @@
 #include "priority_queue.h"
 #include <Eigen/Dense>
 #include <fmt/format.h>
+#include <fmt/ostream.h>
 #include <optional>
 #include <unordered_set>
 #include <iostream>
+
+#include <chrono>
 
 
 struct PlannerConfiguration {
@@ -460,6 +463,37 @@ struct Path {
     double dist = 0.0;
 };
 
+namespace std {
+template <>
+struct hash<Path::Point> {
+    std::size_t operator()(const Path::Point& p) const {
+        // pack two int32 into one uint64
+        std::size_t res;
+        res  = (std::size_t)p.i << 32;
+        res |= (std::size_t)p.j & 0x00000000FFFFFFFF;
+        return res;
+    }
+};
+}
+
+double octileDistance(const Path::Point& a, const Path::Point& b) {
+    // Branchless octile distance
+    int di = std::abs(a.i-b.i);
+    int dj = std::abs(a.j-b.j);
+    constexpr double diagonal = std::sqrt(2);
+    constexpr double twoCardinalMinusDiagonal = 2-diagonal;
+    return (twoCardinalMinusDiagonal*abs(di-dj) + diagonal*(di+dj)) / 2;
+}
+
+Path append(const Path& a, const Path& b) {
+    Path c;
+    c.cost = a.cost + b.cost;
+    c.dist = a.dist + b.dist;
+    c.waypoints = a.waypoints;
+    c.waypoints.insert(c.waypoints.end(), b.waypoints.begin(), b.waypoints.end());
+    return c;
+}
+
 Path reverse(const Path& path) {
     Path rPath = path;
     std::reverse(rPath.waypoints.begin(), rPath.waypoints.end());
@@ -473,33 +507,27 @@ Path pathplan(const TerrainMap& slopeMap, const TerrainMap& reachMap,
     int COLS = slopeMap.cols;
 
     // Construct planning datastructures.
-    auto pointHash = [COLS](const Path::Point& p) { return p.i*COLS + p.j; };
-    ska::flat_hash_set<Path::Point, decltype(pointHash)> closed(10, pointHash);
+    ska::flat_hash_set<Path::Point> closed;
     PriorityQueue<Path::Point, double> open;
 
     struct NodeData {
         Path::Point pred;
         double gscore;
     };
-    ska::flat_hash_map<Path::Point, NodeData, decltype(pointHash)> nodeMap(10, pointHash);
+    ska::flat_hash_map<Path::Point, NodeData> nodeMap;
 
     // Define the planning heuristic.
-    auto getHeuristic = [](const Path::Point& a, const Path::Point& b) -> double {
-        // Branchless octile distance
-        int di = std::abs(a.i-b.i);
-        int dj = std::abs(a.j-b.j);
-        constexpr double diagonal = std::sqrt(2);
-        constexpr double twoCardinalMinusDiagonal = 2-diagonal;
-        return (twoCardinalMinusDiagonal*abs(di-dj) + diagonal*(di+dj)) / 2;
+    auto getHeuristic = [&slopeMap](const Path::Point& a, const Path::Point& b) -> double {
+        return slopeMap.pitch * octileDistance(a, b);
     };
 
     // Generate the successors of a node.
     auto getSuccessors = [ROWS, COLS, &reachMap](const Path::Point& p) -> std::vector<Path::Point> {
         std::vector<Path::Point> succs; succs.reserve(8);
         if( p.i+1 < ROWS && reachMap(p.i+1, p.j) ) { succs.push_back( Path::Point { .i = p.i+1, .j = p.j } ); }
-        if( p.i-1 >= 0   && reachMap(p.i+1, p.j) ) { succs.push_back( Path::Point { .i = p.i-1, .j = p.j } ); }
-        if( p.j+1 < COLS && reachMap(p.i+1, p.j) ) { succs.push_back( Path::Point { .i = p.i, .j = p.j+1 } ); }
-        if( p.j-1 >= 0   && reachMap(p.i+1, p.j) ) { succs.push_back( Path::Point { .i = p.i, .j = p.j-1 } ); }
+        if( p.i-1 >= 0   && reachMap(p.i-1, p.j) ) { succs.push_back( Path::Point { .i = p.i-1, .j = p.j } ); }
+        if( p.j+1 < COLS && reachMap(p.i, p.j+1) ) { succs.push_back( Path::Point { .i = p.i, .j = p.j+1 } ); }
+        if( p.j-1 >= 0   && reachMap(p.i, p.j-1) ) { succs.push_back( Path::Point { .i = p.i, .j = p.j-1 } ); }
 
         if( p.i+1 < ROWS && p.j+1 < COLS && reachMap(p.i+1, p.j+1) ) {
             succs.push_back( Path::Point { .i = p.i+1, .j = p.j+1 } );
@@ -517,10 +545,10 @@ Path pathplan(const TerrainMap& slopeMap, const TerrainMap& reachMap,
     };
 
     // Compute the cost to travel from one point to another.
-    auto getCost = [&slopeMap, &getHeuristic](const Path::Point& a, const Path::Point& b) -> double {
+    auto getCost = [&slopeMap](const Path::Point& a, const Path::Point& b) -> double {
         const double slope = slopeMap(b.i, b.j);
-        const double octileDistance = slopeMap.pitch * getHeuristic(a, b);
-        return 8 * slope / 90.0 + octileDistance;
+        const double dist = slopeMap.pitch * octileDistance(a, b);
+        return 8 * slope / 90.0 + dist;
     };
 
     // Initialize the search.
@@ -581,6 +609,7 @@ Path pathplan(const TerrainMap& slopeMap, const TerrainMap& reachMap,
         return path;
     }
 
+    // Backtrack from the goal to get the path.
     Path::Point state = goal;
     while( !(state == start) ) {
         path.waypoints.push_back(state);
@@ -594,6 +623,49 @@ Path pathplan(const TerrainMap& slopeMap, const TerrainMap& reachMap,
     path = reverse(path);
 
     return path;
+}
+
+std::vector<Path> multipathplan(const TerrainMap& slopeMap, const TerrainMap& reachMap,
+                                const Path::Point& start,
+                                const std::vector<Path::Point>& goals) {
+
+    // NOTES(Jordan): Sunday planning upgrade path.
+    //
+    // Step 0. Read and understand existing code.
+    //         + What does the planAllPairs function do?
+    //         + How is planAllPairs2 different?
+    //         + How does the pathplan function work?
+    //         + How will multipathplan be different?
+    //
+    // Step 1. Set up an if-statement to switch between old and new code.
+    //         + if( useNewCode ) { planAllPairs2(); } else { planAllPairs(); }
+    //
+    // Step 2. Run the old code on a few simple planning examples.
+    //         + Plan with a landing site and a single vantage.
+    //             >> ./planranger -nv=1
+    //         + Plan with a landing site and a few vantages.
+    //             >> ./planranger -nv=3
+    //         + Write down the resulting route costs.
+    //           When written, your code should produce the same costs.
+    //
+    // Step 3. Implement multipathplan. Steal most of the code from pathplan!
+    // 
+    // Step 4. Show your implementation is correct.
+    //         + Plan with a landing site and a single vantage.
+    //             >> ./planranger -nv=1
+    //         + Plan with a landing site and a few vantages.
+    //             >> ./planranger -nv=3
+    //         + Are the resulting path costs the same as before?
+    // 
+    // Step 5. Brag about it!
+    //         + Plot cpu time spent as a function of the number of vantages.
+    //         + Show how the new code scales better than the old code.
+    //         + Think about pictures we could draw to illustrate the changes.
+    //         + Present to the class?
+    //
+
+    std::vector<Path> paths;
+    return paths;
 }
 
 std::vector<Vantage> routeplan(const std::vector<Vantage> allSites, const Eigen::MatrixXd& dists) {
@@ -628,7 +700,7 @@ std::vector<Vantage> routeplan(const std::vector<Vantage> allSites, const Eigen:
     bool improved = false;
     do {
         fmt::print("Improving route [{}] ...\n", iterations);
-        fmt::print("Route Length: {:0.2}\n", routeLength);
+        fmt::print("Route Length: {}\n", routeLength);
         improved = false;
         for(int i=1; i<routeIndices.size()-1; ++i) {
 
@@ -668,7 +740,7 @@ std::vector<Vantage> routeplan(const std::vector<Vantage> allSites, const Eigen:
                 }
                 // This route is shorter! Keep it.
                 if( dist < routeLength ) {
-                    fmt::print("[{}] Swap {:2}<->{:2} Length: {:0.2}\n", iterations, i,j, dist);
+                    fmt::print("[{}] Swap {:2}<->{:2} Length: {}\n", iterations, i,j, dist);
                     routeLength = dist;
                     routeIndices = newIndices;
                     improved = true;
@@ -683,18 +755,135 @@ std::vector<Vantage> routeplan(const std::vector<Vantage> allSites, const Eigen:
     return route;
 }
 
-// Sort vantages by their angle relative to (siteX, siteY).
-std::vector<Vantage> sortCCW(const std::vector<Vantage> vantages, double siteX, double siteY) {
-    std::vector<Vantage> sorted = vantages;
-    auto angle = [siteX, siteY](const Vantage& v0, const Vantage& v1) {
-        double aX = v0.x-siteX;
-        double aY = v0.y-siteY;
-        double bX = v1.x-siteX;
-        double bY = v1.y-siteY;
-        return std::atan2(aY, aX) < std::atan2(bY, bX);
+std::vector<std::vector<Path>> planAllPairs(const std::vector<Vantage>& sites,
+                                            const TerrainMap& slopeMap,
+                                            const TerrainMap& reachMap) {
+
+    // Compute paths between all pairs of sites.
+    const auto ROWS = slopeMap.rows;
+    const auto COLS = slopeMap.cols;
+
+    // Generate all combinations of two indices into the sites vector.
+    std::vector<std::pair<int,int>> allPairIndices;
+    for(int a=0; a<sites.size(); ++a) {
+        for(int b=a+1; b<sites.size(); ++b) {
+            allPairIndices.push_back(std::make_pair(a,b));
+        }
+    }
+
+    // Allocate space for paths.
+    std::vector<std::vector<Path>> paths;
+    paths.resize(sites.size());
+    for(auto& p : paths) { p.resize(sites.size()); }
+
+    int progress = 0;
+    #pragma omp parallel for shared(progress)
+    for(int i=0; i<allPairIndices.size(); ++i) {
+        auto [a, b] = allPairIndices[i];
+        #pragma omp critical(PRINT)
+        {
+            fmt::print("[{}/{}] Planning path from site {:2} to site {:2}.\n", progress++, allPairIndices.size(), a, b);
+        }
+
+        Path::Point start, goal;
+        start.i = slopeMap.yCoordToGridIndex(sites[a].y);
+        start.j = slopeMap.xCoordToGridIndex(sites[a].x);
+        goal.i = slopeMap.yCoordToGridIndex(sites[b].y);
+        goal.j = slopeMap.xCoordToGridIndex(sites[b].x);
+
+        const auto path = pathplan(slopeMap, reachMap, start, goal);
+
+        paths[a][b] = path;
+        paths[b][a] = reverse(path);
+    }
+    return paths;
+}
+
+std::vector<std::vector<Path>> planAllPairs2(const std::vector<Vantage>& sites,
+                                             const TerrainMap& slopeMap,
+                                             const TerrainMap& reachMap) {
+    std::vector<std::vector<Path>> allPaths;
+    allPaths.resize(sites.size());
+    for(auto& pathList : allPaths) { pathList.resize(sites.size()); }
+
+    // Generate all combinations of two indices into the allSites vector.
+    #pragma omp parallel for
+    for(int a=0; a<sites.size()-1; ++a) {
+        Path::Point start;
+        start.i = slopeMap.yCoordToGridIndex(sites[a].y);
+        start.j = slopeMap.xCoordToGridIndex(sites[a].x);
+
+        std::vector<Path::Point> goals;
+        for(int b=a+1; b<sites.size(); ++b) {
+            Path::Point goal;
+            goal.i = slopeMap.yCoordToGridIndex(sites[b].y);
+            goal.j = slopeMap.xCoordToGridIndex(sites[b].x);
+            goals.push_back(goal);
+        }
+
+        auto paths = multipathplan(slopeMap, reachMap, start, goals);
+
+        #pragma omp critical(PRINT)
+        {
+            fmt::print("Planning {} paths from site {:2}.\n", goals.size(), a);
+            for( const auto& path : paths ) {
+                const auto& start = path.waypoints[0];
+                const auto& goal = path.waypoints[path.waypoints.size()-1];
+
+                // We forgot which (a,b) pair this goal came from.
+                // We have to find this goal in the goals list so we know where
+                // to record things in the costs and dists matrices.
+                int b = a+1;
+                {
+                    const auto it = std::find(goals.begin(), goals.end(), goal);
+                    assert( it != goals.cend() );
+                    b += std::distance(goals.begin(), it);
+                }
+                allPaths[a][b] = path;
+                allPaths[b][a] = reverse(path);
+            }
+        }
+    }
+    return allPaths;
+}
+
+Path assembleRoute(const std::vector<Vantage>& route, const std::vector<std::vector<Path>> paths, const TerrainMap& elevationMap) {
+    // Stick all the paths in a hash table indexed by (start, goal) pairs.
+    using PointPair = std::pair<Path::Point, Path::Point>;
+    auto hashPointPair = [&elevationMap](const PointPair& pp) {
+        int ROWS = elevationMap.rows;
+        int COLS = elevationMap.cols;
+        int h0 = pp.first.i*COLS + pp.first.j;
+        int h1 = pp.second.i*COLS + pp.second.j;
+        return h0*ROWS*COLS + h1;
     };
-    std::sort(sorted.begin(), sorted.end(), angle);
-    return sorted;
+    ska::flat_hash_map<PointPair, Path, decltype(hashPointPair)> pathLookup(10, hashPointPair);
+
+    for(int a=0; a<paths.size(); ++a) {
+        for(int b=0; b<paths[0].size(); ++b) {
+            const auto& p = paths[a][b];
+            if( p.waypoints.size() != 0 ) {
+                Path::Point s = p.waypoints[0];
+                Path::Point g = p.waypoints[p.waypoints.size()-1];
+                pathLookup[std::make_pair(s,g)] = p;
+            }
+        }
+    }
+
+    // Walk the route, lookup each path segment, and glue them all together.
+    Path finalPath;
+    for(int i=0; i<route.size()-1; ++i) {
+        Vantage v0 = route[i]; 
+        Vantage v1 = route[i+1]; 
+        Path::Point p0, p1;
+        p0.i = elevationMap.yCoordToGridIndex(v0.y);
+        p0.j = elevationMap.xCoordToGridIndex(v0.x);
+        p1.i = elevationMap.yCoordToGridIndex(v1.y);
+        p1.j = elevationMap.xCoordToGridIndex(v1.x);
+        Path path = pathLookup[std::make_pair(p0, p1)];
+        finalPath = append(finalPath, path);
+    }
+    return finalPath;
 }
 
 int main(int argc, char* argv[]) {
@@ -718,16 +907,15 @@ int main(int argc, char* argv[]) {
     int landingSiteJ = elevationMap.xCoordToGridIndex(landingSiteX);
 
     if( landingSiteI < 0 || landingSiteI >= elevationMap.rows ||
-        landingSiteJ < 0 || landingSiteJ >= elevationMap.cols ) {
-        throw std::runtime_error(
+        landingSiteJ < 0 || landingSiteJ >= elevationMap.cols ) { throw std::runtime_error(
             fmt::format("Landing site at ({}, {}) is outside of map boundaries ({}, {}).",
                         landingSiteX, landingSiteY, elevationMap.height(), elevationMap.width()));
     }
 
     // Construct lander communications map.
     TerrainMap commsMap = buildCommsMap(tmesh, elevationMap,
-                                            landingSiteX, landingSiteY,
-                                            config->landerHeight, config->roverHeight);
+                                        landingSiteX, landingSiteY,
+                                        config->landerHeight, config->roverHeight);
 
     // Map low-slope, communicable terrain.
     const auto safeMap = buildSafeMap(commsMap, slopeMap, config->roverMaxSlope);
@@ -745,26 +933,6 @@ int main(int argc, char* argv[]) {
     // Select the best vantages from all of the candidates.
     auto vantages = selectVantages(candidates, probes, config->numVantages);
 
-    // Construct the vantageMap.
-    auto vantageMap = slopeMap;
-    {
-        double maxCoverage = 0;
-        for(const auto& v : vantages) { maxCoverage = std::max(maxCoverage, v.totalCoverage); }
-        for(const auto& v : vantages) {
-            int j = vantageMap.xCoordToGridIndex(v.x);
-            int i = vantageMap.yCoordToGridIndex(v.y);
-            double markerValue = 120 + 10 * v.totalCoverage / maxCoverage;
-            int R = 2.0 / config->mapPitch;
-            for(int ii=-R; ii<=R; ++ii) {
-                for(int jj=-R; jj<=R; ++jj) {
-                    if( ii*ii + jj*jj <= R*R ) {
-                        vantageMap(i+ii,j+jj) = markerValue;
-                    }
-                }
-            }
-        }
-    }
-
     // Map combined coverage from all vantages.
     auto coverageMap = buildCoverageMap(tmesh, elevationMap, vantages, config->roverHeight, config->visAngle);
 
@@ -779,7 +947,7 @@ int main(int argc, char* argv[]) {
         file.close();
     }
 
-    // Save maps.
+    // Save some maps.
     {
         {
             auto map = elevationMap;
@@ -822,127 +990,82 @@ int main(int argc, char* argv[]) {
             map.saveEXR(config->outputDir+"candidates.exr");
         }
         {
-            auto map = vantageMap;
-            map.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
-            map.saveEXR(config->outputDir+"vantages.exr");
-        }
-        {
             auto map = coverageMap;
             map.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
             map.saveEXR(config->outputDir+"coverage.exr");
         }
-        for(int vi=0; vi<vantages.size(); ++vi) {
-            std::vector<Vantage> tmp;
-            tmp.push_back(vantages[vi]);
-            auto coverageMap = buildCoverageMap(tmesh, elevationMap, tmp, config->roverHeight, config->visAngle);
-            int j = vantageMap.xCoordToGridIndex(vantages[vi].x);
-            int i = vantageMap.yCoordToGridIndex(vantages[vi].y);
-            coverageMap.drawCircle(vantages[vi].x, vantages[vi].y, vantages.size()+1, 3.0);
-            coverageMap.drawCircle(landingSiteX, landingSiteY, vantages.size()+10, 4.0);
-            coverageMap.saveEXR(config->outputDir+fmt::format("coverage_{:02}.exr",vi));
-        }
     }
 
-    // Compute paths between all pairs of k vantages plus the landing site.
-    Eigen::MatrixXd costs(vantages.size()+1, vantages.size()+1); costs.fill(-1);
-    Eigen::MatrixXd dists(vantages.size()+1, vantages.size()+1); dists.fill(-1);
+    // Draw all vantages on a single map.
+    auto vantageMap = slopeMap;
+    {
+        double maxCoverage = 0;
+        for(const auto& v : vantages) { maxCoverage = std::max(maxCoverage, v.totalCoverage); }
+        for(const auto& v : vantages) {
+            double markerValue = 120 + 10 * v.totalCoverage / maxCoverage;
+            int R = 2.0 / config->mapPitch;
+            vantageMap.drawCircle(v.x, v.y, markerValue, R); 
+        }
+    }
+    vantageMap.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
+    vantageMap.saveEXR(config->outputDir+"vantages.exr");
 
-    using PointPair = std::pair<Path::Point, Path::Point>;
-    auto hashPointPair = [&elevationMap](const PointPair& pp) {
-        int ROWS = elevationMap.rows;
-        int COLS = elevationMap.cols;
-        int h0 = pp.first.i*COLS + pp.first.j;
-        int h1 = pp.second.i*COLS + pp.second.j;
-        return h0*ROWS*COLS + h1;
-    };
-    ska::flat_hash_map<PointPair, Path, decltype(hashPointPair)> pathLookup(10, hashPointPair);
+    // Draw separate coverage maps for each vantage.
+    for(int vi=0; vi<vantages.size(); ++vi) {
+        std::vector<Vantage> tmp;
+        tmp.push_back(vantages[vi]);
+        auto coverageMap = buildCoverageMap(tmesh, elevationMap, tmp, config->roverHeight, config->visAngle);
+        int j = vantageMap.xCoordToGridIndex(vantages[vi].x);
+        int i = vantageMap.yCoordToGridIndex(vantages[vi].y);
+        coverageMap.drawCircle(vantages[vi].x, vantages[vi].y, vantages.size()+1, 3.0);
+        coverageMap.drawCircle(landingSiteX, landingSiteY, vantages.size()+10, 4.0);
+        coverageMap.saveEXR(config->outputDir+fmt::format("coverage_{:02}.exr",vi));
+    }
+
+    // Create a list of planning sites containing the landing site and all vantages.
     Vantage landingSite {.x = landingSiteX, .y = landingSiteY, .z = landingSiteZ, .totalCoverage = 0.0};
-
-    // Sort vantages counterclockwise around their centroid.
-    double centroidX = 0; double centroidY = 0;
-    for(const auto& v : vantages) { centroidX += v.x; centroidY += v.y; }
-    centroidX /= vantages.size(); centroidY /= vantages.size();
-    vantages = sortCCW(vantages, centroidX, centroidY);
 
     std::vector<Vantage> allSites;
     allSites.push_back(landingSite);
     allSites.insert(std::end(allSites), std::begin(vantages), std::end(vantages));
 
-    // Generate all combinations of two indices into the allSites vector.
-    std::vector<std::pair<int,int>> allPairIndices;
-    for(int a=0; a<allSites.size(); ++a) {
-        for(int b=a+1; b<allSites.size(); ++b) {
-            allPairIndices.push_back(std::make_pair(a,b));
+    // Compute paths between all pairs of k vantages plus the landing site.
+    const auto paths = planAllPairs2(allSites, slopeMap, reachMap);
+
+    // Organize path costs into convenient matrices for route planning.
+    Eigen::MatrixXd costs(allSites.size(), allSites.size()); costs.fill(-1);
+    Eigen::MatrixXd dists(allSites.size(), allSites.size()); dists.fill(-1);
+    for(int a=0; a<paths.size(); ++a) {
+        for(int b=0; b<paths[0].size(); ++b) {
+            costs(a,b) = paths[a][b].cost;
+            dists(a,b) = paths[a][b].dist;
         }
-    }
-
-    int progress = 0;
-    #pragma omp parallel for shared(progress)
-    for(int i=0; i<allPairIndices.size(); ++i) {
-        auto [a, b] = allPairIndices[i];
-        #pragma omp critical(PRINT)
-        {
-            fmt::print("[{}/{}] Planning path from site {:2} to site {:2}.\n", progress++, allPairIndices.size(), a, b);
-        }
-
-        Path::Point start, goal;
-        start.i = slopeMap.yCoordToGridIndex(allSites[a].y);
-        start.j = slopeMap.xCoordToGridIndex(allSites[a].x);
-        goal.i = slopeMap.yCoordToGridIndex(allSites[b].y);
-        goal.j = slopeMap.xCoordToGridIndex(allSites[b].x);
-
-        const auto path = pathplan(slopeMap, reachMap, start, goal);
-
-        pathLookup[std::make_pair(start, goal)] = path;
-        pathLookup[std::make_pair(goal, start)] = reverse(path);
-
-        costs(a,b) = path.cost;
-        costs(b,a) = path.cost;
-        dists(a,b) = path.dist;
-        dists(b,a) = path.dist;
     }
 
     // Compute exploration route.
     std::vector<Vantage> route = routeplan(allSites, dists);
 
+    // Chain paths together to create the final route.
+    Path path = assembleRoute(route, paths, elevationMap);
+
     // Draw the final route!
     TerrainMap routeMap = vantageMap;
     routeMap.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
-    for(int i=0; i<route.size()-1; ++i) {
-        Vantage v0 = route[i]; 
-        Vantage v1 = route[i+1]; 
-        Path::Point p0, p1;
-        p0.i = routeMap.yCoordToGridIndex(v0.y);
-        p0.j = routeMap.xCoordToGridIndex(v0.x);
-        p1.i = routeMap.yCoordToGridIndex(v1.y);
-        p1.j = routeMap.xCoordToGridIndex(v1.x);
-        Path path = pathLookup[std::make_pair(p0, p1)];
-        for(const auto& p : path.waypoints) {
-            routeMap(p.i, p.j) = 100;
-        }
+    for(const auto& p : path.waypoints) {
+        routeMap(p.i, p.j) = 100;
     }
     routeMap.saveEXR(config->outputDir+"route.exr"); 
 
-    // Save route to xyz file.
+    // Save the route to an xyz file.
     {
         std::ofstream file;
         file.open(config->outputDir+"route.xyz");
-        for(int i=0; i<route.size()-1; ++i) {
-            Vantage v0 = route[i]; 
-            Vantage v1 = route[i+1]; 
-            Path::Point p0, p1;
-            p0.i = routeMap.yCoordToGridIndex(v0.y);
-            p0.j = routeMap.xCoordToGridIndex(v0.x);
-            p1.i = routeMap.yCoordToGridIndex(v1.y);
-            p1.j = routeMap.xCoordToGridIndex(v1.x);
-            Path path = pathLookup[std::make_pair(p0, p1)];
-            for(const auto& p : path.waypoints) {
-                Vantage v;
-                v.x = elevationMap.gridIndexToXCoord(p.j);
-                v.y = elevationMap.gridIndexToXCoord(p.i);
-                v.z = elevationMap(p.i, p.j) + config->roverHeight;
-                file << fmt::format("{} {} {}\n", v.x, v.y, v.z);
-            }
+        for(const auto& p : path.waypoints) {
+            Vantage v;
+            v.x = elevationMap.gridIndexToXCoord(p.j);
+            v.y = elevationMap.gridIndexToXCoord(p.i);
+            v.z = elevationMap(p.i, p.j) + config->roverHeight;
+            file << fmt::format("{} {} {}\n", v.x, v.y, v.z);
         }
         file.close();
     }
