@@ -9,29 +9,55 @@
 #include <optional>
 #include <unordered_set>
 #include <iostream>
+#include <filesystem>
 
 #include <chrono>
-
 
 struct PlannerConfiguration {
     std::string meshfile   = "../meshes/lmp_crop.ply";
     std::string outputDir  = "./";
-    double mapPitch        = 1.0;       // meters
     double landingSiteX    = 100;       // meters
     double landingSiteY    = 200;       // meters
     double landerHeight    = 2.0;       // meters
-    double roverHeight     = 1.0;       // meters
-    double roverMaxSlope   = 20.0;      // degrees
-    double roverSpeed      = 0.01;      // m/s
-    int    numProbes       = 10000;     // 
-    int    numCandidates   = 10000;     // 
-    int    numVantages     = 15;        // 
-    double visAngle        = 55;        // degrees
+
+    double mapPitch             = 1.0;       // meters
+    int    numProbes            = 10000;     // 
+    int    numCandidates        = 10000;     // 
+    int    numVantages          = 15;        // 
+    double visAngle             = 55;        // degrees
+    double maxVisRange          = 300;       // meters
+    double minVantageSeparation = 20.0;      // meters
+
+    double roverHeight                 =  1.0; // meters
+    double roverSpeed                  = 0.01; // m/s
+    double roverFOV                    =  180; // degrees
+    double roverLateralSlopeLimit      = 12.0; // degrees
+    double roverLongitudinalSlopeLimit = 20.0; // degrees
+    double roverPointTurnSlopeLimit    =  5.0; // degrees
+
+    const double distCostMultiplier  = 1.0;
+    const double slopeCostMultiplier = 8.0;
+    const double turnCostMultiplier  = 0.1;
+    const double heuristicMultiplier = 1.0;
 };
 
-std::optional<PlannerConfiguration> parseCommandLine(int argc, char* argv[]) {
-    PlannerConfiguration cfg;
+// Global configuration structure
+PlannerConfiguration config;
 
+enum class Direction : int8_t { N = 0, NE, E, SE, S, SW, W, NW };
+
+double directionToDegrees(const Direction& d) {
+    const double dir2angle[] = {90, 45, 0, 315, 270, 225, 180, 135};
+    return dir2angle[(int)d];
+}
+
+std::string directionToString(const Direction& d) {
+    const std::string dir2name[] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
+    return dir2name[(int)d];
+}
+
+
+void parseCommandLine(int argc, char* argv[]) {
     argh::parser cmdl(argc, argv);
 
     if( cmdl[{ "-h", "--help" }] ) {
@@ -48,162 +74,416 @@ std::optional<PlannerConfiguration> parseCommandLine(int argc, char* argv[]) {
         fmt::print("\tnc: the number of candidate vantages to evaluate.\n");
         fmt::print("\tnv: the number of vantages to select from the candidates.\n");
         fmt::print("\tva: the visibility angle [deg] beyond which a view is not counted.\n");
-        return {};
+        return;
     }
 
-    cmdl(1, cfg.meshfile) >> cfg.meshfile;
-    cmdl(2, cfg.outputDir) >> cfg.outputDir;
-    cfg.outputDir = cfg.outputDir + "/";
+    cmdl(1, config.meshfile) >> config.meshfile;
+    cmdl(2, config.outputDir) >> config.outputDir;
+    config.outputDir = config.outputDir + "/";
 
-    cmdl("p", cfg.mapPitch) >> cfg.mapPitch;
-    cmdl("x", cfg.landingSiteX) >> cfg.landingSiteX;
-    cmdl("y", cfg.landingSiteY) >> cfg.landingSiteY;
-    cmdl("rs", cfg.roverMaxSlope) >> cfg.roverMaxSlope;
-    cmdl("rh", cfg.roverHeight) >> cfg.roverHeight;
-    cmdl("lh", cfg.landerHeight) >> cfg.landerHeight;
-    cmdl("np", cfg.numProbes) >> cfg.numProbes;
-    cmdl("nc", cfg.numCandidates) >> cfg.numCandidates;
-    cmdl("nv", cfg.numVantages) >> cfg.numVantages;
-    cmdl("va", cfg.visAngle) >> cfg.visAngle;
-    return std::make_optional(cfg);
+    cmdl("p", config.mapPitch) >> config.mapPitch;
+    cmdl("x", config.landingSiteX) >> config.landingSiteX;
+    cmdl("y", config.landingSiteY) >> config.landingSiteY;
+    cmdl("lonslope", config.roverLongitudinalSlopeLimit) >> config.roverLongitudinalSlopeLimit;
+    cmdl("latslope", config.roverLateralSlopeLimit) >> config.roverLateralSlopeLimit;
+    cmdl("turnslope", config.roverPointTurnSlopeLimit) >> config.roverPointTurnSlopeLimit;
+    cmdl("rh", config.roverHeight) >> config.roverHeight;
+    cmdl("lh", config.landerHeight) >> config.landerHeight;
+    cmdl("np", config.numProbes) >> config.numProbes;
+    cmdl("nc", config.numCandidates) >> config.numCandidates;
+    cmdl("nv", config.numVantages) >> config.numVantages;
+    cmdl("va", config.visAngle) >> config.visAngle;
 }
 
-std::tuple<TerrainMap,TerrainMap,TerrainMap>
+struct SlopeAtlas {
+    TerrainMapFloat absolute;
+    TerrainMapFloat north;
+    TerrainMapFloat northeast;
+    TerrainMapFloat east;
+    TerrainMapFloat southeast;
+
+    SlopeAtlas(double mapWidth, double mapHeight, double mapPitch) :
+        absolute(mapWidth, mapHeight, mapPitch), 
+        north(mapWidth, mapHeight, mapPitch), 
+        northeast(mapWidth, mapHeight, mapPitch), 
+        east(mapWidth, mapHeight, mapPitch), 
+        southeast(mapWidth, mapHeight, mapPitch) {}
+
+    double gridIndexToXCoord(size_t j) const { return absolute.gridIndexToXCoord(j); }
+    double gridIndexToYCoord(size_t i) const { return absolute.gridIndexToYCoord(i); }
+
+    size_t xCoordToGridIndex(double x) const { return absolute.xCoordToGridIndex(x); }
+    size_t yCoordToGridIndex(double y) const { return absolute.yCoordToGridIndex(y); }
+
+    double width() const { return absolute.width(); }
+    double height() const { return absolute.height(); }
+
+    size_t rows() const { return absolute.rows; }
+    size_t cols() const { return absolute.cols; }
+    size_t pitch() const { return absolute.pitch; }
+};
+
+struct Path {
+    struct State {
+        int i = 0;
+        int j = 0;
+        Direction d = Direction::N;
+        bool operator==(const State& rhs) const {
+            return rhs.i==i && rhs.j==j && d==rhs.d;
+        }
+        bool sameLocation(const State& rhs) { return rhs.i==i && rhs.j==j; }
+        bool sameDirection(const State& rhs) { return d==rhs.d; }
+    };
+
+    std::vector<State> states;
+
+    double cost = -1.0;
+    double dist = -1.0;
+};
+
+namespace std {
+template <>
+struct hash<Path::State> {
+    std::size_t operator()(const Path::State& p) const {
+        // pack two int32 into one uint64
+        std::size_t res;
+        res  = (std::size_t)p.i << 32;
+        res |= (std::size_t)p.j & 0x00000000FFFFFFFF;
+        // use boost hash_combine to mix in the direction as well.
+        res ^= (std::size_t)p.d + 0x9e3779b9 + (res << 6) + (res >> 2);
+        return res;
+    }
+};
+}
+
+double octileDistance(const Path::State& a, const Path::State& b) {
+    // Branchless octile distance
+    int di = std::abs(a.i-b.i);
+    int dj = std::abs(a.j-b.j);
+    constexpr double diagonal = std::sqrt(2);
+    constexpr double twoCardinalMinusDiagonal = 2-diagonal;
+    return (twoCardinalMinusDiagonal*abs(di-dj) + diagonal*(di+dj)) / 2;
+}
+
+Direction directionFromTo(const Path::State& from, const Path::State& to) {
+    constexpr double tan_pi_8 = std::tan(M_PI/8.0);
+
+    const int di = to.i-from.i;
+    const int dj = to.j-from.j;
+
+    if( di <= 0 and std::abs(dj) <= tan_pi_8 * -di ) { return Direction::N; }
+    if( di >= 0 and std::abs(dj) <= tan_pi_8 *  di ) { return Direction::S; }
+
+    if( dj >= 0 and std::abs(di) <= tan_pi_8 *  dj ) { return Direction::E; }
+    if( dj <= 0 and std::abs(di) <= tan_pi_8 * -dj ) { return Direction::W; }
+
+    if( di < 0 and dj > 0 ) { return Direction::NE; }
+    if( di > 0 and dj > 0 ) { return Direction::SE; }
+
+    if( di < 0 and dj < 0 ) { return Direction::NW; }
+    if( di > 0 and dj < 0 ) { return Direction::SW; }
+
+    return to.d;
+};
+
+Path append(const Path& a, const Path& b) {
+    Path c;
+    c.cost = a.cost + b.cost;
+    c.dist = a.dist + b.dist;
+    c.states = a.states;
+    c.states.insert(c.states.end(), b.states.begin(), b.states.end());
+    return c;
+}
+
+Path reverse(const Path& path) {
+    Path rPath = path;
+    std::reverse(rPath.states.begin(), rPath.states.end());
+    return rPath;
+}
+
+uint8_t setBit(uint8_t byte, uint8_t bit) {
+    return byte | ((uint8_t) 1) << bit;
+};
+uint8_t clearBit(uint8_t byte, uint8_t bit) {
+    return byte & ~(((uint8_t) 1) << bit);
+};
+bool checkBit(uint8_t byte, uint8_t bit) {
+    return (byte >> bit) & 0x01;
+};
+bool checkMapBit(const TerrainMapU8& map, const Path::State& state) {
+    return checkBit(map.atIJ(state.i, state.j), (int)state.d);
+};
+void setMapBit(TerrainMapU8& map, const Path::State& state) {
+    map.atIJ(state.i, state.j) = setBit(map.atIJ(state.i, state.j), (int)state.d);
+};
+
+
+std::tuple<TerrainMapFloat,TerrainMapFloat,SlopeAtlas>
 buildTerrainMaps(const TerrainMesh& tmesh, const double mapPitch) {
     const double mapX = tmesh.maxX()-tmesh.minX();
     const double mapY = tmesh.maxY()-tmesh.minY();
     
-    TerrainMap elevationMap(mapX, mapY, mapPitch);
-    TerrainMap slopeMap(mapX, mapY, mapPitch);
-    TerrainMap priorityMap(mapX, mapY, mapPitch);
+    TerrainMapFloat elevationMap(mapX, mapY, mapPitch);
+    TerrainMapFloat priorityMap(mapX, mapY, mapPitch);
+    SlopeAtlas slopeAtlas(mapX, mapY, mapPitch);
 
     const double maxZ = tmesh.maxZ();
     const double minZ = tmesh.minZ();
 
-    for(int i=0; i<slopeMap.rows; ++i) {
-        fmt::print("[{}/{}] Building terrain maps.\n", i, slopeMap.rows);
+    for(int i=0; i<slopeAtlas.rows(); ++i) {
+        fmt::print("[{}/{}] Building terrain maps.\n", i, slopeAtlas.rows());
         #pragma omp parallel for
-        for(int j=0; j<slopeMap.cols; ++j) {
+        for(int j=0; j<slopeAtlas.cols(); ++j) {
             TerrainMesh::Ray ray;
-            ray.oX = slopeMap.gridIndexToXCoord(j);
-            ray.oY = slopeMap.gridIndexToYCoord(i);
+            ray.oX = slopeAtlas.gridIndexToXCoord(j);
+            ray.oY = slopeAtlas.gridIndexToYCoord(i);
             ray.oZ = maxZ + 10.0;
             ray.dX = 0.0; ray.dY = 0.0; ray.dZ = -1.0;
             const auto hit = tmesh.raytrace(ray);
             if( hit ) {
                 elevationMap(i,j) = hit->z;
-                slopeMap(i,j) = 180.0/M_PI * std::acos(0.0*hit->nx+0.0*hit->ny+1.0*hit->nz);
-                if (std::isnan(slopeMap(i,j))) { slopeMap(i,j) = 0.0f; }
                 priorityMap(i,j) = hit->priority;
+
+                double slope = 180.0/M_PI * std::acos(0.0*hit->nx+0.0*hit->ny+1.0*hit->nz);
+                if (std::isnan(slope)) { slope = 0.0f; }
+                slopeAtlas.absolute(i,j) = slope;
+
+                // Project the normal onto the YZ plane and normalize it.
+                // Then compute its angle with the +Y axis.
+                {
+                    // Set x to zero to project onto the YZ plane.
+                    double nx_on_yz = 0.0;
+                    double ny_on_yz = hit->ny;
+                    double nz_on_yz = hit->nz;
+                    double nz_on_yz_norm = std::sqrt(nx_on_yz*nx_on_yz + ny_on_yz*ny_on_yz + nz_on_yz*nz_on_yz);
+                    // Dot product with +Z axis.
+                    double dot = 0*nx_on_yz + 0*ny_on_yz + 1*nz_on_yz;
+                    // Compute the angle with the XY plane.
+                    slopeAtlas.north(i,j) = 180.0/M_PI * std::acos(dot/nz_on_yz_norm) * ((hit->ny >= 0) ? -1.0 : 1.0);
+                }
+
+                // Project the normal onto the XZ plane and normalize it.
+                // Then compute its angle with the +X axis.
+                {
+                    // Set y to zero to project onto the XZ plane.
+                    double nx_on_xz = hit->nx;
+                    double ny_on_xz = 0.0;
+                    double nz_on_xz = hit->nz;
+                    double nz_on_xz_norm = std::sqrt(nx_on_xz*nx_on_xz + ny_on_xz*ny_on_xz + nz_on_xz*nz_on_xz);
+                    // Dot product with +Z axis.
+                    double dot = 0*nx_on_xz + 0*ny_on_xz + 1*nz_on_xz;
+                    // Compute the angle with the XY plane.
+                    slopeAtlas.east(i,j) = 180.0/M_PI * std::acos(dot/nz_on_xz_norm) * ((hit->nx >= 0) ? -1.0 : 1.0);
+                }
+
+                // Compute the directional slope in the northeast and southeast directions.
+                {
+                    double eSlope = slopeAtlas.east(i,j); double nSlope = slopeAtlas.north(i,j);
+                    slopeAtlas.northeast(i,j) = 90 - 180/M_PI * std::acos(0.5 * (std::sin(M_PI/180 * eSlope) + std::sin(M_PI/180 * nSlope)));
+                    slopeAtlas.southeast(i,j) = 90 - 180/M_PI * std::acos(0.5 * (std::sin(M_PI/180 * eSlope) - std::sin(M_PI/180 * nSlope)));
+                }
+
             } else {
                 elevationMap(i,j) = minZ;
-                slopeMap(i,j) = 0.0;
                 priorityMap(i,j) = 0.0;
+
+                slopeAtlas.north(i,j)     = 0.0;
+                slopeAtlas.northeast(i,j) = 0.0;
+                slopeAtlas.east(i,j)      = 0.0;
+                slopeAtlas.southeast(i,j) = 0.0;
+                slopeAtlas.absolute(i,j)  = 0.0;
             }
         }
     }
-    return std::make_tuple(elevationMap, slopeMap, priorityMap);
+    return std::make_tuple(elevationMap, priorityMap, slopeAtlas);
 }
 
-TerrainMap buildReachabilityMap(const TerrainMap& safeMap,
-                                double siteX, double siteY,
-                                double roverMaxSlope) {
-    TerrainMap reachMap(safeMap.width(), safeMap.height(), safeMap.pitch);
+TerrainMapU8 buildReachabilityMap(const TerrainMapFloat& commsMap,
+                                  const SlopeAtlas& slopeAtlas,
+                                  const Path::State& landingSite) {
+    const int ROWS = commsMap.rows;
+    const int COLS = commsMap.cols;
 
-    int rows = reachMap.rows;
-    int cols = reachMap.cols;
+    TerrainMapU8 reachMap(commsMap.width(), commsMap.height(), commsMap.pitch);
 
-    std::vector<bool> visited(rows*cols, false);
-    int ri = safeMap.yCoordToGridIndex(siteY);
-    int rj = safeMap.xCoordToGridIndex(siteX);
+    auto inBounds = [ROWS, COLS](int i, int j) -> bool {
+        return (0 <= i && i<ROWS && 0 <= j && j<COLS);
+    };
 
-    std::vector<int> open;
-    open.push_back(ri*cols+rj);
+    // Generate the successors of a node.
+    auto getSuccessors = [&inBounds, &slopeAtlas, &commsMap](const Path::State& p) -> std::vector<Path::State> {
+        std::vector<Path::State> succs; succs.reserve(7+2);
+        // You can only point turn if the terrain is flat enough.
+        if( slopeAtlas.absolute(p.i, p.j) <= config.roverPointTurnSlopeLimit ) {
+            for(int dd=0; dd<8; ++dd) {
+                Path::State s;
+                s.i=p.i;
+                s.j=p.j;
+                s.d=static_cast<Direction>((static_cast<int>(p.d)+dd)%8);
+                if( s.d != p.d ) {
+                    succs.push_back(s);
+                }
+            }
+        }
+
+        // Try moving one step forward or one step backward.
+        Path::State sf = p;
+        Path::State sb = p;
+
+        constexpr int dX[] = {0,1,1,1,0,-1,-1,-1};
+        constexpr int dY[] = {-1,-1,0,1,1,1,0,-1};
+
+        sf.i += dY[(int)p.d];
+        sf.j += dX[(int)p.d];
+
+        sb.i -= dY[(int)p.d];
+        sb.j -= dX[(int)p.d];
+
+        // Depending on direction, figure out the lateral and longitudinal slope at the current state, p.
+        // NOTE(Jordan): This is a good opportunity to optimize...
+        double nSlopeFwd  = std::abs(slopeAtlas.north(sf.i, sf.j));
+        double eSlopeFwd  = std::abs(slopeAtlas.east(sf.i, sf.j));
+        double neSlopeFwd = std::abs(slopeAtlas.northeast(sf.i, sf.j));
+        double seSlopeFwd = std::abs(slopeAtlas.southeast(sf.i, sf.j));
+
+        double nSlopeBwd  = std::abs(slopeAtlas.north(sb.i, sb.j));
+        double eSlopeBwd  = std::abs(slopeAtlas.east(sb.i, sb.j));
+        double neSlopeBwd = std::abs(slopeAtlas.northeast(sb.i, sb.j));
+        double seSlopeBwd = std::abs(slopeAtlas.southeast(sb.i, sb.j));
+
+        double fwdLonSlope = 90.0;
+        double fwdLatSlope = 90.0;
+
+        double bwdLonSlope = 90.0;
+        double bwdLatSlope = 90.0;
+
+        switch (p.d) {
+            case Direction::N :
+                fwdLonSlope = nSlopeFwd;
+                fwdLatSlope = eSlopeFwd;
+                bwdLonSlope = nSlopeBwd;
+                bwdLatSlope = eSlopeBwd;
+                break;
+            case Direction::NE :
+                fwdLonSlope = neSlopeFwd;
+                fwdLatSlope = seSlopeFwd;
+                bwdLonSlope = nSlopeBwd;
+                bwdLatSlope = eSlopeBwd;
+                break;
+            case Direction::E :
+                fwdLonSlope = eSlopeFwd;
+                fwdLatSlope = nSlopeFwd;
+                bwdLonSlope = nSlopeBwd;
+                bwdLatSlope = eSlopeBwd;
+                break;
+            case Direction::SE :
+                fwdLonSlope = seSlopeFwd;
+                fwdLatSlope = neSlopeFwd;
+                bwdLonSlope = nSlopeBwd;
+                bwdLatSlope = eSlopeBwd;
+                break;
+            case Direction::S :
+                fwdLonSlope = nSlopeFwd;
+                fwdLatSlope = eSlopeFwd;
+                bwdLonSlope = nSlopeBwd;
+                bwdLatSlope = eSlopeBwd;
+                break;
+            case Direction::SW :
+                fwdLonSlope = neSlopeFwd;
+                fwdLatSlope = seSlopeFwd;
+                bwdLonSlope = nSlopeBwd;
+                bwdLatSlope = eSlopeBwd;
+                break;
+            case Direction::W :
+                fwdLonSlope = eSlopeFwd;
+                fwdLatSlope = nSlopeFwd;
+                bwdLonSlope = nSlopeBwd;
+                bwdLatSlope = eSlopeBwd;
+                break;
+            case Direction::NW :
+                fwdLonSlope = seSlopeFwd;
+                fwdLatSlope = neSlopeFwd;
+                bwdLonSlope = nSlopeBwd;
+                bwdLatSlope = eSlopeBwd;
+                break;
+            default:
+                break;
+        }
+
+        // You can only move forward or backward if the next state is reachable and
+        // doing so does not violate the longitudinal or lateral slope limits.
+        if( inBounds(sf.i, sf.j) &&
+            commsMap(sf.i, sf.j) &&
+            fwdLatSlope <= config.roverLateralSlopeLimit &&
+            fwdLonSlope <= config.roverLongitudinalSlopeLimit ) {
+                succs.push_back(sf);
+        }
+        if( inBounds(sb.i, sb.j) &&
+            commsMap(sb.i, sb.j) &&
+            bwdLatSlope <= config.roverLateralSlopeLimit &&
+            bwdLonSlope <= config.roverLongitudinalSlopeLimit ) {
+                succs.push_back(sb);
+        }
+
+        return succs; 
+    };
+
+    TerrainMapU8 visited(commsMap.width(), commsMap.height(), commsMap.pitch);
+
+    std::vector<Path::State> open;
+    open.push_back(landingSite);
 
     int iterations = 0;
     while( !open.empty() ) {
-        int curr = open.back();
-        open.pop_back();
-
-        if( iterations++ % (1<<16) ) {
+        if( iterations++ % (1<<18) ) {
             fmt::print("[{}] Building reach map.\n", iterations);
         }
 
-        if( visited[curr] ) { continue; }
-        visited[curr] = true;
+        // Pop currState from open.
+        const auto currState = open.back();
+        open.pop_back();
 
-        int ci = curr / cols;
-        int cj = curr % cols;
-        reachMap(ci, cj) = 1;
+        // If currState is visited, continue (skip).
+        if( checkMapBit(visited, currState) ) { continue; }
 
-        // Walk east. Add north/south neighbors to the open stack if you can.
-        {
-            int dj=1;
-            while( cj+dj < cols ) {
-                int n = ci*cols+cj+dj;
-                if( visited[n] || safeMap(ci, cj+dj) == 0 ) {
-                    break;
-                }
-                // Can you add the north neighbor to the open set?
-                if( ci+1 < rows && !visited[(ci+1)*cols+cj+dj] && safeMap(ci+1, cj+dj)>0 ) {
-                    open.push_back((ci+1)*cols+cj+dj);
-                }
-                // Can you add the south neighbor to the open set?
-                if( ci-1 >= 0 && !visited[(ci-1)*cols+cj+dj] && safeMap(ci-1, cj+dj)>0 ) {
-                    open.push_back((ci-1)*cols+cj+dj);
-                }
-                reachMap(ci, cj+dj) = 1;
-                visited[n] = true;
-                dj++;
-            }
-        }
+        // currState is visited.
+        setMapBit(visited, currState);
 
-        // Walk west. Add north/south neighbors to the open stack if you can.
-        {
-            int dj=1;
-            while( cj-dj >= 0 ) {
-                int n = ci*cols+cj-dj;
-                if( visited[n] || safeMap(ci, cj-dj) == 0 ) {
-                    break;
-                }
-                // Can you add the north neighbor to the open set?
-                if( ci+1 < rows && !visited[(ci+1)*cols+cj-dj] && safeMap(ci+1, cj-dj)>0 ) {
-                    open.push_back((ci+1)*cols+cj-dj);
-                }
-                // Can you add the south neighbor to the open set?
-                if( ci-1 >= 0 && !visited[(ci-1)*cols+cj-dj] && safeMap(ci-1, cj-dj)>0 ) {
-                    open.push_back((ci-1)*cols+cj-dj);
-                }
-                reachMap(ci, cj-dj) = 1;
-                visited[n] = true;
-                dj++;
-            }
+        // currState is reachable.
+        setMapBit(reachMap, currState);
+
+        // Loop over successors of current state.
+        const auto& successors = getSuccessors(currState);
+        for(const auto& succ : successors) {
+            // mark the successor as reachable
+            setMapBit(reachMap, succ);
+            // add the successor to the open queue.
+            open.push_back(succ);
         }
     }
     return reachMap;
 }
 
-TerrainMap buildCommsMap(const TerrainMesh& tmesh,
-                               const TerrainMap& elevationMap,
-                               double siteX, double siteY,
-                               double landerHeight, double roverHeight) {
+TerrainMapFloat buildCommsMap(const TerrainMesh& tmesh,
+                               const TerrainMapFloat& elevationMap,
+                               const Path::State& landingSite) {
 
-    TerrainMap commsMap(elevationMap.width(),
+    TerrainMapFloat commsMap(elevationMap.width(),
                          elevationMap.height(),
                          elevationMap.pitch);
 
-    const int li = elevationMap.yCoordToGridIndex(siteY);
-    const int lj = elevationMap.xCoordToGridIndex(siteX);
-    const double landerX = siteX;
-    const double landerY = siteY;
-    const double landerZ = elevationMap(li, lj) + landerHeight;
+    const int li = landingSite.i;
+    const int lj = landingSite.j;
+    const double landerX = elevationMap.gridIndexToXCoord(lj);
+    const double landerY = elevationMap.gridIndexToYCoord(li);
+    const double landerZ = elevationMap(li, lj) + config.landerHeight;
 
     for(int ri=0; ri<commsMap.rows; ++ri) {
         for(int rj=0; rj<commsMap.cols; ++rj) {
             TerrainMesh::Ray ray;
             const double roverX = elevationMap.gridIndexToXCoord(rj);
             const double roverY = elevationMap.gridIndexToYCoord(ri);
-            const double roverZ = elevationMap(ri, rj) + roverHeight;
+            const double roverZ = elevationMap(ri, rj) + config.roverHeight;
             ray.oX = landerX;
             ray.oY = landerY;
             ray.oZ = landerZ;
@@ -227,26 +507,16 @@ TerrainMap buildCommsMap(const TerrainMesh& tmesh,
     return commsMap;
 }
 
-TerrainMap buildSafeMap(const TerrainMap& commsMap, const TerrainMap& slopeMap, double roverMaxSlope) {
-    TerrainMap safeMap = commsMap;
-    for(int i=0; i<safeMap.rows; ++i) {
-        for(int j=0; j<safeMap.cols; ++j) {
-            safeMap(i,j) = (commsMap(i,j) > 0 && slopeMap(i,j) <= roverMaxSlope) ? 1 : 0;
-        }
-    }
-    return safeMap;
-}
-
 struct Probe {
     double x,y,z;
     double priority;
 };
 
-std::pair<std::vector<Probe>, TerrainMap>
-generateVisibilityProbes(const TerrainMap& priorityMap, const TerrainMap& elevationMap, int numProbes, double roverHeight) {
+std::pair<std::vector<Probe>, TerrainMapFloat>
+generateVisibilityProbes(const TerrainMapFloat& priorityMap, const TerrainMapFloat& elevationMap) {
     std::vector<Probe> probes;
-    TerrainMap probeMap(priorityMap.width(), priorityMap.height(), priorityMap.pitch);
-    while(probes.size() < numProbes) {
+    TerrainMapFloat probeMap(priorityMap.width(), priorityMap.height(), priorityMap.pitch);
+    while(probes.size() < config.numProbes) {
         int i = priorityMap.rows * static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
         int j = priorityMap.cols * static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
         if( priorityMap(i,j) > 0 ) {
@@ -264,30 +534,55 @@ generateVisibilityProbes(const TerrainMap& priorityMap, const TerrainMap& elevat
 
 struct Vantage {
     double x, y, z;
+    Direction dir = Direction::N;
     std::vector<bool> coverage;
     double totalCoverage = 0;
 };
 
-std::pair<std::vector<Vantage>, TerrainMap>
+std::pair<std::vector<Vantage>, TerrainMapFloat>
 generateVantageCandidates(const TerrainMesh& tmesh,
-                          const TerrainMap& reachMap,
-                          const TerrainMap& elevationMap,
-                          const std::vector<Probe> probes,
-                          int numCandidates, double roverHeight, double visAngle) {
+                          const TerrainMapU8& reachMap,
+                          const TerrainMapFloat& elevationMap,
+                          const std::vector<Probe> probes) {
+    // Generate thousands of random, reachable points at rover height above the terrain.
+    // NOTE(Jordan): I'm currently duplicating each candidate vantage eight times,
+    // once per rover facing direction. This is fairly wasteful. We should probably evaluate
+    // all directions at each location and pick the one direction that has the best coverage.
     std::vector<Vantage> candidates;
-    while(candidates.size() < numCandidates) {
-        int i = reachMap.rows * static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
-        int j = reachMap.cols * static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
-        if( reachMap(i,j) > 0 ) {
-            Vantage v;
-            v.x = reachMap.gridIndexToXCoord(j);
-            v.y = reachMap.gridIndexToYCoord(i);
-            v.z = elevationMap(i,j) + roverHeight;
-            candidates.push_back(v);
+    while(candidates.size() < config.numCandidates) {
+        Path::State state;
+        state.i = reachMap.rows * static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
+        state.j = reachMap.cols * static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
+
+        for(int d=0; d<8; ++d) {
+            state.d = static_cast<Direction>(d);
+            
+            // FIXME(Jordan): Right now this check requires a vantage
+            // to be reachable facing any direction. This is too conservative,
+            // but for some reason I can't reliably plan to states
+            // that can't be reached in some directions.
+            //
+            // The condition here should be this:
+            // if( checkMapBit(reachMap, state) ) {
+
+            if( reachMap(state.i, state.j) == 0b11111111 ) {
+                Vantage v;
+                v.x = reachMap.gridIndexToXCoord(state.j);
+                v.y = reachMap.gridIndexToYCoord(state.i);
+                v.z = elevationMap(state.i,state.j) + config.roverHeight;
+                v.dir = state.d;
+                candidates.push_back(v);
+            }
         }
     }
 
-    auto candidateMap = reachMap;
+    TerrainMapFloat candidateMap(reachMap.width(), reachMap.height(), reachMap.pitch);
+    for(int i=0; i<candidateMap.rows; ++i) {
+        for(int j=0; j<candidateMap.cols; ++j) {
+            candidateMap(i,j) = (reachMap(i,j) == 0) ? 0.0f : 1.0f;
+        }
+    }
+
     int progress = 0;
 
     // For every candidate, trace a ray to all view coverage probes.
@@ -302,10 +597,27 @@ generateVantageCandidates(const TerrainMesh& tmesh,
 
         for(int pi = 0; pi<probes.size(); ++pi) {
             auto& p = probes[pi];
+
+            // Is this ray in front of the rover and within its field of view?
+            {
+                const double roverAngle = directionToDegrees(candidate.dir) * M_PI/180.0;
+                const double rx = std::cos(roverAngle);
+                const double ry = std::sin(roverAngle);
+
+                const double cpx = p.x-candidate.x;
+                const double cpy = p.y-candidate.y;
+                const double cpnorm = std::sqrt(cpx*cpx+cpy*cpy);
+
+                const double viewAngle = 180.0/M_PI * std::acos( (rx*cpx+ry*cpy) / cpnorm );
+                if( std::abs(viewAngle) > config.roverFOV/2 ) {
+                    continue;
+                }
+            }
+
             TerrainMesh::Ray ray;
             ray.oX = candidate.x;
             ray.oY = candidate.y;
-            ray.oZ = candidate.z + roverHeight;
+            ray.oZ = candidate.z + config.roverHeight;
             ray.dX = p.x-candidate.x;
             ray.dY = p.y-candidate.y;
             ray.dZ = p.z-candidate.z;
@@ -317,7 +629,7 @@ generateVantageCandidates(const TerrainMesh& tmesh,
                 double hitDist = std::sqrt((ray.oX-hit->x)*(ray.oX-hit->x) +
                                            (ray.oY-hit->y)*(ray.oY-hit->y) +
                                            (ray.oZ-hit->z)*(ray.oZ-hit->z));
-                if( hitAngle < visAngle && hitDist < 500 && std::abs(rayNorm-hitDist) < 0.05*rayNorm ) {
+                if( hitAngle < config.visAngle && hitDist < config.maxVisRange && std::abs(rayNorm-hitDist) < 0.05*rayNorm ) {
                     candidate.coverage[pi] = true;
                     candidate.totalCoverage += p.priority;
                 }
@@ -325,22 +637,21 @@ generateVantageCandidates(const TerrainMesh& tmesh,
         }
         int i = candidateMap.yCoordToGridIndex(candidate.y);
         int j = candidateMap.xCoordToGridIndex(candidate.x);
-        candidateMap(i,j) = candidate.totalCoverage;
+        candidateMap(i,j) = std::max<float>(candidate.totalCoverage, candidateMap(i,j));
     }
     return std::make_pair(candidates, candidateMap);
 }
 
 std::vector<Vantage> selectVantages(const std::vector<Vantage>& candidates,
-                                    const std::vector<Probe>& probes,
-                                    int numVantages, double minSeparation=10.0) {
+                                    const std::vector<Probe>& probes) {
 
     std::vector<Vantage> vantages;
     std::unordered_set<int> taken;
     std::vector<unsigned char> visCounters(probes.size(), 0);
 
     // Make k selections. Choose the candidate that produces the greatest *new* coverage.
-    for(int k = 0; k<numVantages; ++k) {
-        fmt::print("[{}/{}] Selecting vantages.\n", k, numVantages);
+    for(int k = 0; k<config.numVantages; ++k) {
+        fmt::print("[{}/{}] Selecting vantages.\n", k, config.numVantages);
 
         // Assign a score to every candidate.
         std::vector<float> scores(candidates.size(), 0.0f);
@@ -355,7 +666,7 @@ std::vector<Vantage> selectVantages(const std::vector<Vantage>& candidates,
             for(const auto& ti : taken) {
                 const auto& t = candidates[ti];
                 double d2 = (t.x-c.x)*(t.x-c.x)+(t.y-c.y)*(t.y-c.y)+(t.z-c.z);
-                if( d2 < minSeparation*minSeparation ) {
+                if( d2 < config.minVantageSeparation*config.minVantageSeparation ) {
                     tooClose = true;
                     break;
                 }
@@ -396,24 +707,41 @@ std::vector<Vantage> selectVantages(const std::vector<Vantage>& candidates,
     return vantages;
 }
 
-TerrainMap buildCoverageMap(const TerrainMesh& tmesh, const TerrainMap& elevationMap,
-                            const std::vector<Vantage>& vantages, double roverHeight, double visAngle) {
+TerrainMapFloat buildCoverageMap(const TerrainMesh& tmesh, const TerrainMapFloat& elevationMap,
+                            const std::vector<Vantage>& vantages) {
 
-    TerrainMap coverageMap(elevationMap.width(), elevationMap.height(), elevationMap.pitch);
+    TerrainMapFloat coverageMap(elevationMap.width(), elevationMap.height(), elevationMap.pitch);
 
     for(int vi=0; vi<vantages.size(); ++vi) {
         auto& v = vantages[vi];
         fmt::print("[{}/{}] Generating coverage maps.\n", vi, vantages.size());
         #pragma omp parallel for
-        for(int ri=0; ri<coverageMap.cols; ++ri) {
-            for(int rj=0; rj<coverageMap.rows; ++rj) {
-                TerrainMesh::Ray ray;
+        for(int ri=0; ri<coverageMap.rows; ++ri) {
+            for(int rj=0; rj<coverageMap.cols; ++rj) {
                 const double terrainX = elevationMap.gridIndexToXCoord(rj);
                 const double terrainY = elevationMap.gridIndexToYCoord(ri);
                 const double terrainZ = elevationMap(ri, rj);
+
+                // Is this ray in front of the rover and within its field of view?
+                {
+                    const double roverAngle = directionToDegrees(v.dir) * M_PI/180.0;
+                    const double rx = std::cos(roverAngle);
+                    const double ry = std::sin(roverAngle);
+
+                    const double vtx = terrainX-v.x;
+                    const double vty = terrainY-v.y;
+                    const double vtnorm = std::sqrt(vtx*vtx+vty*vty);
+
+                    const double viewAngle = 180.0/M_PI * std::acos( (rx*vtx+ry*vty) / vtnorm );
+                    if( std::abs(viewAngle) > config.roverFOV/2 ) {
+                        continue;
+                    }
+                }
+
+                TerrainMesh::Ray ray;
                 ray.oX = v.x;
                 ray.oY = v.y;
-                ray.oZ = v.z+roverHeight;
+                ray.oZ = v.z+config.roverHeight;
                 ray.dX = terrainX-ray.oX;
                 ray.dY = terrainY-ray.oY;
                 ray.dZ = terrainZ-ray.oZ;
@@ -427,7 +755,7 @@ TerrainMap buildCoverageMap(const TerrainMesh& tmesh, const TerrainMap& elevatio
                     double hitDist = std::sqrt((ray.oX-hit->x)*(ray.oX-hit->x) +
                                                (ray.oY-hit->y)*(ray.oY-hit->y) +
                                                (ray.oZ-hit->z)*(ray.oZ-hit->z));
-                    if( hitAngle < visAngle && hitDist < 500 && std::abs(rayNorm-hitDist) < rayNorm*0.05 ) { 
+                    if( hitAngle < config.visAngle && hitDist < config.maxVisRange && std::abs(rayNorm-hitDist) < rayNorm*0.05 ) { 
                         coverageMap(ri, rj)++;
                     }
                 } 
@@ -435,240 +763,266 @@ TerrainMap buildCoverageMap(const TerrainMesh& tmesh, const TerrainMap& elevatio
         }
     }
     for(const auto& v : vantages) {
-        int i = coverageMap.yCoordToGridIndex(v.y);
-        int j = coverageMap.xCoordToGridIndex(v.x);
-        int R = 2.0 / coverageMap.pitch;
-        for(int ii=-R; ii<=R; ++ii) {
-            for(int jj=-R; jj<=R; ++jj) {
-                if( ii*ii + jj*jj <= R*R ) {
-                    coverageMap(i+ii,j+jj) = 2*vantages.size();
-                }
-            }
-        }
+        drawCircle(coverageMap, v.x, v.y, (float)2*vantages.size(), 2.0);
     }
     return coverageMap;
 }
 
-struct Path {
-    struct Point {
-        int i = 0;
-        int j = 0;
-        bool operator==(const Point& rhs) const {
-            return rhs.i==i && rhs.j==j;
-        }
-    };
-    std::vector<Point> waypoints;
+std::vector<Path> multipathplan(const SlopeAtlas& slopeAtlas,
+                                const TerrainMapFloat& reachMap,
+                                const Path::State& start,
+                                const std::vector<Path::State>& goals) {
+    int ROWS = slopeAtlas.rows();
+    int COLS = slopeAtlas.cols();
 
-    double cost = 0.0;
-    double dist = 0.0;
-};
-
-namespace std {
-template <>
-struct hash<Path::Point> {
-    std::size_t operator()(const Path::Point& p) const {
-        // pack two int32 into one uint64
-        std::size_t res;
-        res  = (std::size_t)p.i << 32;
-        res |= (std::size_t)p.j & 0x00000000FFFFFFFF;
-        return res;
-    }
-};
-}
-
-double octileDistance(const Path::Point& a, const Path::Point& b) {
-    // Branchless octile distance
-    int di = std::abs(a.i-b.i);
-    int dj = std::abs(a.j-b.j);
-    constexpr double diagonal = std::sqrt(2);
-    constexpr double twoCardinalMinusDiagonal = 2-diagonal;
-    return (twoCardinalMinusDiagonal*abs(di-dj) + diagonal*(di+dj)) / 2;
-}
-
-Path append(const Path& a, const Path& b) {
-    Path c;
-    c.cost = a.cost + b.cost;
-    c.dist = a.dist + b.dist;
-    c.waypoints = a.waypoints;
-    c.waypoints.insert(c.waypoints.end(), b.waypoints.begin(), b.waypoints.end());
-    return c;
-}
-
-Path reverse(const Path& path) {
-    Path rPath = path;
-    std::reverse(rPath.waypoints.begin(), rPath.waypoints.end());
-    return rPath;
-}
-
-Path pathplan(const TerrainMap& slopeMap, const TerrainMap& reachMap,
-              const Path::Point& start, const Path::Point& goal) {
-
-    int ROWS = slopeMap.rows;
-    int COLS = slopeMap.cols;
+    // Shove all the goals into a set.
+    ska::flat_hash_set<Path::State> goalSet;
+    for(const auto& g : goals) { goalSet.insert(g); }
 
     // Construct planning datastructures.
-    ska::flat_hash_set<Path::Point> closed;
-    PriorityQueue<Path::Point, double> open;
+    ska::flat_hash_set<Path::State> closed;
+    PriorityQueue<Path::State, double> open;
 
     struct NodeData {
-        Path::Point pred;
+        Path::State pred;
         double gscore;
     };
-    ska::flat_hash_map<Path::Point, NodeData> nodeMap;
+    ska::flat_hash_map<Path::State, NodeData> nodeMap;
 
     // Define the planning heuristic.
-    auto getHeuristic = [&slopeMap](const Path::Point& a, const Path::Point& b) -> double {
-        return slopeMap.pitch * octileDistance(a, b);
+    auto getHeuristic = [&slopeAtlas](const Path::State& a, const Path::State& b) -> double {
+        const auto goalDir = directionFromTo(a, b);
+        const double turn = 0.25 * std::abs(std::abs(static_cast<int>(a.d)-static_cast<int>(goalDir))-4);
+        const double dist = slopeAtlas.pitch() * octileDistance(a, b);
+        return config.heuristicMultiplier * (config.distCostMultiplier*dist + config.turnCostMultiplier*turn);
     };
-
-    // Generate the successors of a node.
-    auto getSuccessors = [ROWS, COLS, &reachMap](const Path::Point& p) -> std::vector<Path::Point> {
-        std::vector<Path::Point> succs; succs.reserve(8);
-        if( p.i+1 < ROWS && reachMap(p.i+1, p.j) ) { succs.push_back( Path::Point { .i = p.i+1, .j = p.j } ); }
-        if( p.i-1 >= 0   && reachMap(p.i-1, p.j) ) { succs.push_back( Path::Point { .i = p.i-1, .j = p.j } ); }
-        if( p.j+1 < COLS && reachMap(p.i, p.j+1) ) { succs.push_back( Path::Point { .i = p.i, .j = p.j+1 } ); }
-        if( p.j-1 >= 0   && reachMap(p.i, p.j-1) ) { succs.push_back( Path::Point { .i = p.i, .j = p.j-1 } ); }
-
-        if( p.i+1 < ROWS && p.j+1 < COLS && reachMap(p.i+1, p.j+1) ) {
-            succs.push_back( Path::Point { .i = p.i+1, .j = p.j+1 } );
+    auto getMinHeuristic = [&getHeuristic](const Path::State& a, const std::vector<Path::State>& goals) -> double {
+        double minH = std::numeric_limits<double>::infinity();
+        for(const auto& g : goals) {
+            const auto newH = getHeuristic(a, g);
+            minH = std::min<double>(newH, minH);
         }
-        if( p.i-1 >= 0 && p.j-1 >= 0 && reachMap(p.i-1, p.j-1) ) {
-            succs.push_back( Path::Point { .i = p.i-1, .j = p.j-1 } );
-        }
-        if( p.i+1 < ROWS && p.j-1 >= 0 && reachMap(p.i+1, p.j-1) ) {
-            succs.push_back( Path::Point { .i = p.i+1, .j = p.j-1 } );
-        }
-        if( p.i-1 >= 0 && p.j+1 < COLS && reachMap(p.i-1, p.j+1) ) {
-            succs.push_back( Path::Point { .i = p.i-1, .j = p.j+1 } );
-        }
-        return succs; 
+        return minH;
     };
 
     // Compute the cost to travel from one point to another.
-    auto getCost = [&slopeMap](const Path::Point& a, const Path::Point& b) -> double {
-        const double slope = slopeMap(b.i, b.j);
-        const double dist = slopeMap.pitch * octileDistance(a, b);
-        return 8 * slope / 90.0 + dist;
+    auto getCost = [&slopeAtlas](const Path::State& a, const Path::State& b) -> double {
+        const double slope = slopeAtlas.absolute(b.i, b.j);
+        const double dist = slopeAtlas.pitch() * octileDistance(a, b);
+        const double turn = 0.25 * std::abs(std::abs(static_cast<int>(b.d)-static_cast<int>(a.d))-4);
+        //fmt::print("({},{},{}) -> ({},{},{}) ... {:0.3f} {:0.3f} {:0.3f}\n", a.i, a.j, a.d, b.i, b.j, b.d, slope, dist, turn);
+        return config.slopeCostMultiplier * (slope/90.0) +
+               config.distCostMultiplier * dist +
+               config.turnCostMultiplier * turn;
+    };
+
+    auto inBounds = [ROWS, COLS](int i, int j) -> bool {
+        return (0 <= i && i<ROWS && 0 <= j && j<COLS);
+    };
+
+    // Generate the successors of a node.
+    auto getSuccessors = [&inBounds, &slopeAtlas, &reachMap](const Path::State& p) -> std::vector<Path::State> {
+        std::vector<Path::State> succs; succs.reserve(7+2);
+        // You can only point turn if the terrain is flat enough.
+        if( slopeAtlas.absolute(p.i, p.j) <= config.roverPointTurnSlopeLimit ) {
+            for(int dd=0; dd<8; ++dd) {
+                Path::State s;
+                s.i=p.i;
+                s.j=p.j;
+                s.d=static_cast<Direction>((static_cast<int>(p.d)+dd)%8);
+                if( s.d != p.d ) {
+                    succs.push_back(s);
+                }
+            }
+        }
+
+        // Try moving one step forward or one step backward.
+        Path::State sf = p;
+        Path::State sb = p;
+
+        constexpr int dX[] = {0,1,1,1,0,-1,-1,-1};
+        constexpr int dY[] = {-1,-1,0,1,1,1,0,-1};
+
+        sf.i += dY[(int)p.d];
+        sf.j += dX[(int)p.d];
+
+        sb.i -= dY[(int)p.d];
+        sb.j -= dX[(int)p.d];
+
+        // Depending on direction, figure out the lateral and longitudinal slope at the current state, p.
+        // NOTE(Jordan): This is a good opportunity to optimize...
+        double nSlopeFwd  = std::abs(slopeAtlas.north(sf.i, sf.j));
+        double eSlopeFwd  = std::abs(slopeAtlas.east(sf.i, sf.j));
+        double neSlopeFwd = std::abs(slopeAtlas.northeast(sf.i, sf.j));
+        double seSlopeFwd = std::abs(slopeAtlas.southeast(sf.i, sf.j));
+
+        double nSlopeBwd  = std::abs(slopeAtlas.north(sb.i, sb.j));
+        double eSlopeBwd  = std::abs(slopeAtlas.east(sb.i, sb.j));
+        double neSlopeBwd = std::abs(slopeAtlas.northeast(sb.i, sb.j));
+        double seSlopeBwd = std::abs(slopeAtlas.southeast(sb.i, sb.j));
+
+        double fwdLonSlope = 90.0;
+        double fwdLatSlope = 90.0;
+
+        double bwdLonSlope = 90.0;
+        double bwdLatSlope = 90.0;
+
+        switch (p.d) {
+            case Direction::N :
+                fwdLonSlope = nSlopeFwd;
+                fwdLatSlope = eSlopeFwd;
+                bwdLonSlope = nSlopeBwd;
+                bwdLatSlope = eSlopeBwd;
+                break;
+            case Direction::NE :
+                fwdLonSlope = neSlopeFwd;
+                fwdLatSlope = seSlopeFwd;
+                bwdLonSlope = nSlopeBwd;
+                bwdLatSlope = eSlopeBwd;
+                break;
+            case Direction::E :
+                fwdLonSlope = eSlopeFwd;
+                fwdLatSlope = nSlopeFwd;
+                bwdLonSlope = nSlopeBwd;
+                bwdLatSlope = eSlopeBwd;
+                break;
+            case Direction::SE :
+                fwdLonSlope = seSlopeFwd;
+                fwdLatSlope = neSlopeFwd;
+                bwdLonSlope = nSlopeBwd;
+                bwdLatSlope = eSlopeBwd;
+                break;
+            case Direction::S :
+                fwdLonSlope = nSlopeFwd;
+                fwdLatSlope = eSlopeFwd;
+                bwdLonSlope = nSlopeBwd;
+                bwdLatSlope = eSlopeBwd;
+                break;
+            case Direction::SW :
+                fwdLonSlope = neSlopeFwd;
+                fwdLatSlope = seSlopeFwd;
+                bwdLonSlope = nSlopeBwd;
+                bwdLatSlope = eSlopeBwd;
+                break;
+            case Direction::W :
+                fwdLonSlope = eSlopeFwd;
+                fwdLatSlope = nSlopeFwd;
+                bwdLonSlope = nSlopeBwd;
+                bwdLatSlope = eSlopeBwd;
+                break;
+            case Direction::NW :
+                fwdLonSlope = seSlopeFwd;
+                fwdLatSlope = neSlopeFwd;
+                bwdLonSlope = nSlopeBwd;
+                bwdLatSlope = eSlopeBwd;
+                break;
+            default:
+                break;
+        }
+
+        // You can only move forward or backward if the next state is reachable and
+        // doing so does not violate the longitudinal or lateral slope limits.
+        if( inBounds(sf.i, sf.j) &&
+            reachMap(sf.i, sf.j) &&
+            fwdLatSlope <= config.roverLateralSlopeLimit &&
+            fwdLonSlope <= config.roverLongitudinalSlopeLimit ) {
+                succs.push_back(sf);
+        }
+        if( inBounds(sb.i, sb.j) &&
+            reachMap(sb.i, sb.j) &&
+            bwdLatSlope <= config.roverLateralSlopeLimit &&
+            bwdLonSlope <= config.roverLongitudinalSlopeLimit ) {
+                succs.push_back(sb);
+        }
+
+        return succs; 
     };
 
     // Initialize the search.
-    double h = getHeuristic(start, goal);
+    double h = getMinHeuristic(start, goals);
     open.insert(start, h);
 
     nodeMap[start].pred = start;
     nodeMap[start].gscore = 0.0;
 
     // Perform the search.
-    bool success = false;
+    int expansions = 0;
     while( true )
     {
         // The goal is unreachable.
-        if( open.empty() ) { success = false; break; }
+        if( open.empty() ) { break; }
 
-        const Path::Point currPoint = open.top();
+        const Path::State currState = open.top();
         open.pop();
 
         // If you have expanded this state before, skip it.
-        if( closed.find(currPoint) != closed.end() ) { continue; }
+        if( closed.find(currState) != closed.end() ) { continue; }
 
         // Otherwise, add it to closed and expand it.
-        closed.insert(currPoint);
+        closed.insert(currState);
 
-        // If this state is the goal, quit searching!
-        if( currPoint == goal ) {
-            success = true;
-            break;
+        if( ++expansions % (1<<16) == 0 ) {
+            fmt::print("Expansions: {}\n", expansions);
+        }
+
+        // If this state is a goal, remove it from the goal set!
+        auto it = goalSet.find(currState);
+        if( it != goalSet.end() ) {
+            fmt::print("Found a path from ({},{}) to ({},{})! {} goals remaining...\n", start.i, start.j, it->i, it->j, goalSet.size()-1);
+            goalSet.erase(it);
+            if( goalSet.empty() ) {
+                break;
+            }
         }
 
         // Since we can't end the search yet, let's look
         // up some info on the current point and keep working.
-        const double currG = nodeMap[currPoint].gscore;
+        const double currG = nodeMap.at(currState).gscore;
 
-        // Examine each successor of currPoint.
-        const auto succs = getSuccessors(currPoint);
+        // Examine each successor of currState.
+        const auto succs = getSuccessors(currState);
         for(const auto& succ : succs) {
-            const double succCost = getCost(currPoint, succ);
+            const double succCost = getCost(currState, succ);
             const double tentativeG = currG + succCost;
 
             if( nodeMap.find(succ) == nodeMap.end() ||
                 tentativeG < nodeMap.at(succ).gscore ) {
-                double h = getHeuristic(succ, goal);
+                double h = getMinHeuristic(succ, goals);
                 double f = tentativeG + h;
                 open.insert(succ, f);
 
-                nodeMap[succ].pred = currPoint;
+                nodeMap[succ].pred = currState;
                 nodeMap[succ].gscore = tentativeG;
             }
         }
     }
 
-    Path path;
-    if( !success ) { 
-        path.cost = -1;
-        path.dist = -1;
-        return path;
-    }
-
-    // Backtrack from the goal to get the path.
-    Path::Point state = goal;
-    while( !(state == start) ) {
-        path.waypoints.push_back(state);
-        Path::Point pred = nodeMap[state].pred;
-        path.dist += std::sqrt((pred.i-state.i)*(pred.i-state.i)+(pred.j-state.j)*(pred.j-state.j));
-        state = pred;
-    }
-    path.waypoints.push_back(start);
-    path.cost = nodeMap[goal].gscore;
-
-    path = reverse(path);
-
-    return path;
-}
-
-std::vector<Path> multipathplan(const TerrainMap& slopeMap, const TerrainMap& reachMap,
-                                const Path::Point& start,
-                                const std::vector<Path::Point>& goals) {
-
-    // NOTES(Jordan): Sunday planning upgrade path.
-    //
-    // Step 0. Read and understand existing code.
-    //         + What does the planAllPairs function do?
-    //         + How is planAllPairs2 different?
-    //         + How does the pathplan function work?
-    //         + How will multipathplan be different?
-    //
-    // Step 1. Set up an if-statement to switch between old and new code.
-    //         + if( useNewCode ) { planAllPairs2(); } else { planAllPairs(); }
-    //
-    // Step 2. Run the old code on a few simple planning examples.
-    //         + Plan with a landing site and a single vantage.
-    //             >> ./planranger -nv=1
-    //         + Plan with a landing site and a few vantages.
-    //             >> ./planranger -nv=3
-    //         + Write down the resulting route costs.
-    //           When written, your code should produce the same costs.
-    //
-    // Step 3. Implement multipathplan. Steal most of the code from pathplan!
-    // 
-    // Step 4. Show your implementation is correct.
-    //         + Plan with a landing site and a single vantage.
-    //             >> ./planranger -nv=1
-    //         + Plan with a landing site and a few vantages.
-    //             >> ./planranger -nv=3
-    //         + Are the resulting path costs the same as before?
-    // 
-    // Step 5. Brag about it!
-    //         + Plot cpu time spent as a function of the number of vantages.
-    //         + Show how the new code scales better than the old code.
-    //         + Think about pictures we could draw to illustrate the changes.
-    //         + Present to the class?
-    //
-
     std::vector<Path> paths;
+
+    // Backtrack paths from all goals.
+    for(const auto& goal : goals) {
+        Path path;
+        if( nodeMap.find(goal) == nodeMap.end() ) {
+            paths.push_back(path);
+            continue;
+        }
+        Path::State state = goal;
+        while( !(state == start) ) {
+            path.states.push_back(state);
+            Path::State pred = nodeMap[state].pred;
+            path.dist += std::sqrt((pred.i-state.i)*(pred.i-state.i)+(pred.j-state.j)*(pred.j-state.j));
+            state = pred;
+        }
+        path.states.push_back(start);
+        path.cost = nodeMap[goal].gscore;
+
+        path = reverse(path);
+        paths.push_back(path);
+    }
     return paths;
 }
 
-std::vector<Vantage> routeplan(const std::vector<Vantage> allSites, const Eigen::MatrixXd& dists) {
+std::vector<Path::State> routeplan(const std::vector<Path::State> allSites, const Eigen::MatrixXd& costs) {
     std::vector<int> routeIndices;
     std::vector<bool> visited(allSites.size(), false);
     int visitedCount = 1;
@@ -676,22 +1030,26 @@ std::vector<Vantage> routeplan(const std::vector<Vantage> allSites, const Eigen:
     int currentIdx = 0;
     visited[currentIdx] = true;
     routeIndices.push_back(currentIdx);
-    double routeLength = 0;
+    double routeCost = 0;
 
     while(visitedCount < allSites.size()) {
-        int closestIdx = 0;
-        double closestDist = std::numeric_limits<double>::infinity();
-        for(int i=0; i<dists.rows(); ++i) {
-            const auto dist = dists(currentIdx, i);
-            if( !visited[i] && dist >= 0 && dist < closestDist ) {
-                closestIdx = i;
-                closestDist = dist;
+        int minCostIdx = -1;
+        double minCost = std::numeric_limits<double>::infinity();
+        for(int i=0; i<costs.rows(); ++i) {
+            const auto cost = costs(currentIdx, i);
+            if( !visited[i] && cost >= 0 && cost < minCost ) {
+                minCostIdx = i;
+                minCost = cost;
             }
         }
-        currentIdx = closestIdx;
-        routeIndices.push_back(closestIdx);
-        visited[closestIdx] = true;
-        routeLength += closestDist;
+
+        // If there are no valid routes to another city, give up.
+        if( minCostIdx < 0 ) { break; }
+
+        currentIdx = minCostIdx;
+        routeIndices.push_back(minCostIdx);
+        visited[minCostIdx] = true;
+        routeCost += minCost;
         visitedCount++;
     }
 
@@ -700,13 +1058,13 @@ std::vector<Vantage> routeplan(const std::vector<Vantage> allSites, const Eigen:
     bool improved = false;
     do {
         fmt::print("Improving route [{}] ...\n", iterations);
-        fmt::print("Route Length: {}\n", routeLength);
+        fmt::print("Route cost: {}\n", routeCost);
         improved = false;
         for(int i=1; i<routeIndices.size()-1; ++i) {
 
             // Don't rewire the segment 0<->1 because that segment
             // connects the landing site to the closest vantage.
-            if( i== 1 ) { continue; }
+            if( i == 1 ) { continue; }
 
             // NOTES (Jordan):
             // There is a tension here.
@@ -733,15 +1091,22 @@ std::vector<Vantage> routeplan(const std::vector<Vantage> allSites, const Eigen:
                 for(int k=j+1; k<routeIndices.size(); ++k) {
                     newIndices.push_back(routeIndices[k]);
                 }
+
                 // Calculate the length of the new route.
+                // If any segment is invalid (dist < 0), forget this swap.
                 double dist = 0;
+                bool valid = true;
                 for(int i=0; i<newIndices.size()-1; ++i) {
-                    dist += dists(newIndices[i], newIndices[i+1]);
+                    double d = costs(newIndices[i], newIndices[i+1]);
+                    if( d < 0 ) { valid = false; break; }
+                    dist += d;
                 }
+                if( !valid ) { continue; }
+
                 // This route is shorter! Keep it.
-                if( dist < routeLength ) {
+                if( dist < routeCost ) {
                     fmt::print("[{}] Swap {:2}<->{:2} Length: {}\n", iterations, i,j, dist);
-                    routeLength = dist;
+                    routeCost = dist;
                     routeIndices = newIndices;
                     improved = true;
                 }
@@ -749,59 +1114,15 @@ std::vector<Vantage> routeplan(const std::vector<Vantage> allSites, const Eigen:
         }
     } while( improved && iterations++ < 100 );
 
-    std::vector<Vantage> route;
+    std::vector<Path::State> route;
     for(const auto& ri : routeIndices) { route.push_back(allSites[ri]); }
 
     return route;
 }
 
-std::vector<std::vector<Path>> planAllPairs(const std::vector<Vantage>& sites,
-                                            const TerrainMap& slopeMap,
-                                            const TerrainMap& reachMap) {
-
-    // Compute paths between all pairs of sites.
-    const auto ROWS = slopeMap.rows;
-    const auto COLS = slopeMap.cols;
-
-    // Generate all combinations of two indices into the sites vector.
-    std::vector<std::pair<int,int>> allPairIndices;
-    for(int a=0; a<sites.size(); ++a) {
-        for(int b=a+1; b<sites.size(); ++b) {
-            allPairIndices.push_back(std::make_pair(a,b));
-        }
-    }
-
-    // Allocate space for paths.
-    std::vector<std::vector<Path>> paths;
-    paths.resize(sites.size());
-    for(auto& p : paths) { p.resize(sites.size()); }
-
-    int progress = 0;
-    #pragma omp parallel for shared(progress)
-    for(int i=0; i<allPairIndices.size(); ++i) {
-        auto [a, b] = allPairIndices[i];
-        #pragma omp critical(PRINT)
-        {
-            fmt::print("[{}/{}] Planning path from site {:2} to site {:2}.\n", progress++, allPairIndices.size(), a, b);
-        }
-
-        Path::Point start, goal;
-        start.i = slopeMap.yCoordToGridIndex(sites[a].y);
-        start.j = slopeMap.xCoordToGridIndex(sites[a].x);
-        goal.i = slopeMap.yCoordToGridIndex(sites[b].y);
-        goal.j = slopeMap.xCoordToGridIndex(sites[b].x);
-
-        const auto path = pathplan(slopeMap, reachMap, start, goal);
-
-        paths[a][b] = path;
-        paths[b][a] = reverse(path);
-    }
-    return paths;
-}
-
-std::vector<std::vector<Path>> planAllPairs2(const std::vector<Vantage>& sites,
-                                             const TerrainMap& slopeMap,
-                                             const TerrainMap& reachMap) {
+std::vector<std::vector<Path>> planAllPairs(const std::vector<Path::State>& sites,
+                                            const SlopeAtlas& slopeAtlas,
+                                            const TerrainMapFloat& reachMap) {
     std::vector<std::vector<Path>> allPaths;
     allPaths.resize(sites.size());
     for(auto& pathList : allPaths) { pathList.resize(sites.size()); }
@@ -809,26 +1130,26 @@ std::vector<std::vector<Path>> planAllPairs2(const std::vector<Vantage>& sites,
     // Generate all combinations of two indices into the allSites vector.
     #pragma omp parallel for
     for(int a=0; a<sites.size()-1; ++a) {
-        Path::Point start;
-        start.i = slopeMap.yCoordToGridIndex(sites[a].y);
-        start.j = slopeMap.xCoordToGridIndex(sites[a].x);
-
-        std::vector<Path::Point> goals;
-        for(int b=a+1; b<sites.size(); ++b) {
-            Path::Point goal;
-            goal.i = slopeMap.yCoordToGridIndex(sites[b].y);
-            goal.j = slopeMap.xCoordToGridIndex(sites[b].x);
-            goals.push_back(goal);
-        }
-
-        auto paths = multipathplan(slopeMap, reachMap, start, goals);
-
         #pragma omp critical(PRINT)
         {
-            fmt::print("Planning {} paths from site {:2}.\n", goals.size(), a);
+            fmt::print("Planning {} paths from site {:2}.\n", sites.size()-a-1, a);
+        }
+
+        const Path::State start = sites[a];
+
+        std::vector<Path::State> goals;
+        for(int b=a+1; b<sites.size(); ++b) {
+            goals.push_back(sites[b]);
+        }
+
+        auto paths = multipathplan(slopeAtlas, reachMap, start, goals);
+
+        #pragma omp critical
+        {
             for( const auto& path : paths ) {
-                const auto& start = path.waypoints[0];
-                const auto& goal = path.waypoints[path.waypoints.size()-1];
+                if( path.states.size() == 0 ) { continue; }
+                const auto& start = path.states[0];
+                const auto& goal = path.states[path.states.size()-1];
 
                 // We forgot which (a,b) pair this goal came from.
                 // We have to find this goal in the goals list so we know where
@@ -844,27 +1165,85 @@ std::vector<std::vector<Path>> planAllPairs2(const std::vector<Vantage>& sites,
             }
         }
     }
+
+    // Draw all paths on their own map.
+    for(int a=0; a<allPaths.size(); ++a) {
+        for(int b=0; b<allPaths[0].size(); ++b) {
+            if( a >= b ) { continue; }
+            const auto& path = allPaths[a][b];
+
+            TerrainMapFloat pathMap = slopeAtlas.absolute;
+
+            // Draw the start.
+            const auto& start = sites[a];
+            double sx = pathMap.gridIndexToXCoord(start.j);
+            double sy = pathMap.gridIndexToYCoord(start.i);
+            drawCircle(pathMap, sx,sy, 100, 2.0);
+
+            // Draw the goal.
+            const auto&  goal = sites[b];
+            double gx = pathMap.gridIndexToXCoord(goal.j);
+            double gy = pathMap.gridIndexToYCoord(goal.i);
+            drawCircle(pathMap, gx, gy, 100, 2.0);
+
+            // Draw the path.
+            for(const auto& p : path.states) {
+                pathMap(p.i, p.j) = 100;
+            }
+
+            // Save the map.
+            saveEXR(pathMap, config.outputDir+fmt::format("paths_{:02}_{:02}.exr", a, b)); 
+        }
+    }
+
+    // Draw all of the paths on a single map.
+    TerrainMapFloat allPathsMap = slopeAtlas.absolute;
+    for(int a=0; a<allPaths.size(); ++a) {
+        for(int b=0; b<allPaths[0].size(); ++b) {
+            if( a >= b ) { continue; }
+            const auto& path = allPaths[a][b];
+
+            // Draw the start.
+            const auto& start = sites[a];
+            double sx = allPathsMap.gridIndexToXCoord(start.j);
+            double sy = allPathsMap.gridIndexToYCoord(start.i);
+            drawCircle(allPathsMap, sx,sy, 100, 2.0);
+
+            // Draw the goal.
+            const auto& goal = sites[b];
+            double gx = allPathsMap.gridIndexToXCoord(goal.j);
+            double gy = allPathsMap.gridIndexToYCoord(goal.i);
+            drawCircle(allPathsMap, gx, gy, 100, 2.0);
+
+            // Draw the path.
+            for(const auto& p : path.states) {
+                allPathsMap(p.i, p.j) = 100;
+            }
+        }
+    }
+    // Save the map.
+    saveEXR(allPathsMap, config.outputDir+"paths.exr"); 
+    
     return allPaths;
 }
 
-Path assembleRoute(const std::vector<Vantage>& route, const std::vector<std::vector<Path>> paths, const TerrainMap& elevationMap) {
+Path assembleRoute(const std::vector<Path::State>& route, const std::vector<std::vector<Path>> paths, const TerrainMapFloat& elevationMap) {
     // Stick all the paths in a hash table indexed by (start, goal) pairs.
-    using PointPair = std::pair<Path::Point, Path::Point>;
-    auto hashPointPair = [&elevationMap](const PointPair& pp) {
-        int ROWS = elevationMap.rows;
-        int COLS = elevationMap.cols;
-        int h0 = pp.first.i*COLS + pp.first.j;
-        int h1 = pp.second.i*COLS + pp.second.j;
-        return h0*ROWS*COLS + h1;
+    using StatePair = std::pair<Path::State, Path::State>;
+    auto hashStatePair = [&elevationMap](const StatePair& pp) {
+        std::hash<Path::State> hasher;
+        auto hash = hasher(pp.first);
+        hash ^= hasher(pp.second) + 0x9e3779b9 + (hash<<6) + (hash>>2);
+        return hash;
     };
-    ska::flat_hash_map<PointPair, Path, decltype(hashPointPair)> pathLookup(10, hashPointPair);
+    ska::flat_hash_map<StatePair, Path, decltype(hashStatePair)> pathLookup(10, hashStatePair);
 
     for(int a=0; a<paths.size(); ++a) {
         for(int b=0; b<paths[0].size(); ++b) {
             const auto& p = paths[a][b];
-            if( p.waypoints.size() != 0 ) {
-                Path::Point s = p.waypoints[0];
-                Path::Point g = p.waypoints[p.waypoints.size()-1];
+            if( p.states.size() != 0 ) {
+                Path::State s = p.states[0];
+                Path::State g = p.states[p.states.size()-1];
                 pathLookup[std::make_pair(s,g)] = p;
             }
         }
@@ -873,34 +1252,48 @@ Path assembleRoute(const std::vector<Vantage>& route, const std::vector<std::vec
     // Walk the route, lookup each path segment, and glue them all together.
     Path finalPath;
     for(int i=0; i<route.size()-1; ++i) {
-        Vantage v0 = route[i]; 
-        Vantage v1 = route[i+1]; 
-        Path::Point p0, p1;
-        p0.i = elevationMap.yCoordToGridIndex(v0.y);
-        p0.j = elevationMap.xCoordToGridIndex(v0.x);
-        p1.i = elevationMap.yCoordToGridIndex(v1.y);
-        p1.j = elevationMap.xCoordToGridIndex(v1.x);
-        Path path = pathLookup[std::make_pair(p0, p1)];
+        const auto& s0 = route[i]; 
+        const auto& s1 = route[i+1]; 
+        const auto key = std::make_pair(s0, s1);
+        Path path = pathLookup.at(key);
         finalPath = append(finalPath, path);
     }
     return finalPath;
 }
 
+// Sort vantages by their angle relative to (siteX, siteY).
+std::vector<Vantage> sortCCW(const std::vector<Vantage> vantages, double siteX, double siteY) {
+    std::vector<Vantage> sorted = vantages;
+    auto angle = [siteX, siteY](const Vantage& v0, const Vantage& v1) {
+        double aX = v0.x-siteX;
+        double aY = v0.y-siteY;
+        double bX = v1.x-siteX;
+        double bY = v1.y-siteY;
+        return std::atan2(aY, aX) < std::atan2(bY, bX);
+    };
+    std::sort(sorted.begin(), sorted.end(), angle);
+    return sorted;
+}
+
 int main(int argc, char* argv[]) {
 
-    // Configure the planner.
-    const auto config = parseCommandLine(argc, argv);
-    if( !config ) { return 0; }
+    // Parse the command line and populate the global config struct.
+    parseCommandLine(argc, argv);
+
+    // Create the output directory if it doesn't exist already.
+    if( !std::filesystem::exists(config.outputDir) ) {
+        std::filesystem::create_directory(config.outputDir);
+    }
 
     // Read the terrain mesh.
-    TerrainMesh tmesh(config->meshfile);
+    TerrainMesh tmesh(config.meshfile);
 
-    // Construct elevation, slope, and priority maps.
-    auto [elevationMap, slopeMap, priorityMap] = buildTerrainMaps(tmesh, config->mapPitch);
+    // Construct elevation, priority, and slope maps.
+    auto [elevationMap, priorityMap, slopeAtlas] = buildTerrainMaps(tmesh, config.mapPitch);
 
     // Compute landing site coordinates.
-    double landingSiteX = config->landingSiteX;
-    double landingSiteY = config->landingSiteY;
+    double landingSiteX = config.landingSiteX;
+    double landingSiteY = config.landingSiteY;
     double landingSiteZ = elevationMap.atXY(landingSiteX, landingSiteY);
 
     int landingSiteI = elevationMap.yCoordToGridIndex(landingSiteY);
@@ -912,37 +1305,58 @@ int main(int argc, char* argv[]) {
                         landingSiteX, landingSiteY, elevationMap.height(), elevationMap.width()));
     }
 
-    // Construct lander communications map.
-    TerrainMap commsMap = buildCommsMap(tmesh, elevationMap,
-                                        landingSiteX, landingSiteY,
-                                        config->landerHeight, config->roverHeight);
+    Path::State landingState;
+    landingState.i = landingSiteI;
+    landingState.j = landingSiteJ;
+    landingState.d = (landingSiteJ > elevationMap.rows/2) ? Direction::W : Direction::E;
 
-    // Map low-slope, communicable terrain.
-    const auto safeMap = buildSafeMap(commsMap, slopeMap, config->roverMaxSlope);
+    // Construct lander communications map.
+    TerrainMapFloat commsMap = buildCommsMap(tmesh, elevationMap, landingState);
 
     // Flood-fill reachable safe terrain.
-    TerrainMap reachMap = buildReachabilityMap(safeMap, landingSiteX, landingSiteY, config->roverMaxSlope);
+    TerrainMapU8 reachMap = buildReachabilityMap(commsMap, slopeAtlas, landingState);
+    {
+        for(int d=0; d<8; ++d) {
+            TerrainMapFloat map(reachMap.width(), reachMap.height(), reachMap.pitch);
+            for(int i=0; i<map.rows; ++i) {   
+                for(int j=0; j<map.cols; ++j) {
+                    Path::State s {.i=i, .j=j, .d=(Direction)d};
+                    map(i,j) = checkMapBit(reachMap, s) ? 1.0f : 0.0f;
+                }
+            }
+            drawCircle(map, landingSiteX, landingSiteY, 2.0f, 4.0);
+            saveEXR(map, config.outputDir+fmt::format("reach_{}.exr", d));
+        }
+    }
 
     // Generate visibility probes.
-    auto [probes, probeMap] = generateVisibilityProbes(priorityMap, elevationMap, config->numProbes, config->roverHeight);
+    const auto [probes, probeMap] = generateVisibilityProbes(priorityMap, elevationMap);
 
     // Generate candidate vantages.
-    auto [candidates, candidateMap] = generateVantageCandidates(tmesh, reachMap, elevationMap, probes,
-                                                                config->numCandidates, config->roverHeight, config->visAngle);
+    const auto [candidates, candidateMap] = generateVantageCandidates(tmesh, reachMap, elevationMap, probes);
 
     // Select the best vantages from all of the candidates.
-    auto vantages = selectVantages(candidates, probes, config->numVantages);
+    auto vantages = selectVantages(candidates, probes);
+
+    // Sort vantages in counterclockwise order.
+    {
+        // Sort vantages counterclockwise around their centroid.
+        double centroidX = 0; double centroidY = 0;
+        for(const auto& v : vantages) { centroidX += v.x; centroidY += v.y; }
+        centroidX /= vantages.size(); centroidY /= vantages.size();
+        vantages = sortCCW(vantages, centroidX, centroidY);
+    }
 
     // Map combined coverage from all vantages.
-    auto coverageMap = buildCoverageMap(tmesh, elevationMap, vantages, config->roverHeight, config->visAngle);
+    auto coverageMap = buildCoverageMap(tmesh, elevationMap, vantages);
 
     // Save landing site and vantages to xyz file.
     {
         std::ofstream file;
-        file.open(config->outputDir+"sites.xyz");
+        file.open(config.outputDir+"sites.xyz");
         file << fmt::format("{} {} {}\n", landingSiteX, landingSiteY, landingSiteZ);
         for(const auto& v : vantages) {
-            file << fmt::format("{} {} {}\n", v.x, v.y, v.z + config->roverHeight);
+            file << fmt::format("{} {} {}\n", v.x, v.y, v.z + config.roverHeight);
         }
         file.close();
     }
@@ -951,86 +1365,134 @@ int main(int argc, char* argv[]) {
     {
         {
             auto map = elevationMap;
-            map.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
-            map.saveEXR(config->outputDir+"elevation.exr");
+            drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
+            saveEXR(map, config.outputDir+"elevation.exr");
         }
         {
-            auto map = slopeMap;
-            map.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
-            map.saveEXR(config->outputDir+"slope.exr");
+            auto map = slopeAtlas.absolute;
+            drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
+            saveEXR(map, config.outputDir+"slope.exr");
         }
         {
-            auto map = priorityMap;
-            map.drawCircle(landingSiteX, landingSiteY, 10, 4.0);
-            map.saveEXR(config->outputDir+"priority.exr");
+            auto map = slopeAtlas.north;
+            drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
+            saveEXR(map, config.outputDir+"slopeN.exr");
+        }
+        {
+            auto map = slopeAtlas.east;
+            drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
+            saveEXR(map, config.outputDir+"slopeE.exr");
+        }
+        {
+            auto map = slopeAtlas.northeast;
+            drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
+            saveEXR(map, config.outputDir+"slopeNE.exr");
+        }
+        {
+            auto map = slopeAtlas.southeast;
+            drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
+            saveEXR(map, config.outputDir+"slopeSE.exr");
         }
         {
             auto map = reachMap;
-            map.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
-            map.saveEXR(config->outputDir+"reach.exr");
+            drawCircle(map, landingSiteX, landingSiteY, 100, 4.0);
+            saveEXR(map, config.outputDir+"reach.exr");
+        }
+        {
+            auto map = priorityMap;
+            drawCircle(map, landingSiteX, landingSiteY, 10, 3.0);
+            saveEXR(map, config.outputDir+"priority.exr");
         }
         {
             auto map = commsMap;
-            map.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
-            map.saveEXR(config->outputDir+"comms.exr");
-        }
-        {
-            auto map = safeMap;
-            map.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
-            map.saveEXR(config->outputDir+"safe.exr");
+            drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
+            saveEXR(map, config.outputDir+"comms.exr");
         }
         {
             auto map = probeMap;
-            map.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
-            map.saveEXR(config->outputDir+"probes.exr");
+            drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
+            saveEXR(map, config.outputDir+"probes.exr");
         }
         {
             auto map = candidateMap;
-            map.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
-            map.saveEXR(config->outputDir+"candidates.exr");
+            drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
+            saveEXR(map, config.outputDir+"candidates.exr");
         }
         {
             auto map = coverageMap;
-            map.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
-            map.saveEXR(config->outputDir+"coverage.exr");
+            drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
+            saveEXR(map, config.outputDir+"coverage.exr");
         }
     }
 
     // Draw all vantages on a single map.
-    auto vantageMap = slopeMap;
+    auto vantageMap = slopeAtlas.absolute;
     {
         double maxCoverage = 0;
         for(const auto& v : vantages) { maxCoverage = std::max(maxCoverage, v.totalCoverage); }
         for(const auto& v : vantages) {
             double markerValue = 120 + 10 * v.totalCoverage / maxCoverage;
-            int R = 2.0 / config->mapPitch;
-            vantageMap.drawCircle(v.x, v.y, markerValue, R); 
+            drawCircle(vantageMap, v.x, v.y, markerValue, 2.0); 
         }
     }
-    vantageMap.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
-    vantageMap.saveEXR(config->outputDir+"vantages.exr");
+    drawCircle(vantageMap, landingSiteX, landingSiteY, 100, 3.0);
+    saveEXR(vantageMap, config.outputDir+"vantages.exr");
 
     // Draw separate coverage maps for each vantage.
     for(int vi=0; vi<vantages.size(); ++vi) {
         std::vector<Vantage> tmp;
         tmp.push_back(vantages[vi]);
-        auto coverageMap = buildCoverageMap(tmesh, elevationMap, tmp, config->roverHeight, config->visAngle);
+        auto coverageMap = buildCoverageMap(tmesh, elevationMap, tmp);
         int j = vantageMap.xCoordToGridIndex(vantages[vi].x);
         int i = vantageMap.yCoordToGridIndex(vantages[vi].y);
-        coverageMap.drawCircle(vantages[vi].x, vantages[vi].y, vantages.size()+1, 3.0);
-        coverageMap.drawCircle(landingSiteX, landingSiteY, vantages.size()+10, 4.0);
-        coverageMap.saveEXR(config->outputDir+fmt::format("coverage_{:02}.exr",vi));
+        drawCircle(coverageMap, vantages[vi].x, vantages[vi].y, vantages.size()+1, 2.0);
+        drawCircle(coverageMap, landingSiteX, landingSiteY, vantages.size()+10, 3.0);
+        saveEXR(coverageMap, config.outputDir+fmt::format("coverage_{:02}.exr",vi));
     }
 
-    // Create a list of planning sites containing the landing site and all vantages.
-    Vantage landingSite {.x = landingSiteX, .y = landingSiteY, .z = landingSiteZ, .totalCoverage = 0.0};
+    // Construct a state for the landing site.
+    // Set its direction to point toward the centroid of the vantages.
+    std::vector<Path::State> allSites;
+    {
+        Path::State centroid;
+        double cx = 0; double cy = 0;
+        for(const auto& v : vantages) {
+            cx += v.x;
+            cy += v.y;
+        }
+        cx /= vantages.size(); cy /= vantages.size();
+        centroid.i = slopeAtlas.yCoordToGridIndex(cy);
+        centroid.j = slopeAtlas.xCoordToGridIndex(cx);
+        centroid.d = Direction::N; // Don't care.
 
-    std::vector<Vantage> allSites;
-    allSites.push_back(landingSite);
-    allSites.insert(std::end(allSites), std::begin(vantages), std::end(vantages));
+        allSites.push_back(landingState);
+
+        for(const auto& v : vantages) {
+            Path::State s;
+            s.i = slopeAtlas.yCoordToGridIndex(v.y);
+            s.j = slopeAtlas.xCoordToGridIndex(v.x);
+            s.d = directionFromTo(s, centroid);
+            allSites.push_back(s);
+        }
+    }
+
+    // Save the sites to a csv file.
+    {
+        std::ofstream file;
+        file.open(config.outputDir+"sites.csv");
+        file << fmt::format("x,y,z,i,j,d\n");
+        for(const auto& s : allSites) {
+            Vantage v;
+            v.x = elevationMap.gridIndexToXCoord(s.j);
+            v.y = elevationMap.gridIndexToXCoord(s.i);
+            v.z = elevationMap(s.i, s.j) + config.roverHeight;
+            file << fmt::format("{:0.3f},{:0.3f},{:0.3f}, {},{},{}\n", v.x, v.y, v.z, s.i, s.j, directionToString(s.d));
+        }
+        file.close();
+    }
 
     // Compute paths between all pairs of k vantages plus the landing site.
-    const auto paths = planAllPairs2(allSites, slopeMap, reachMap);
+    const auto paths = planAllPairs(allSites, slopeAtlas, commsMap);
 
     // Organize path costs into convenient matrices for route planning.
     Eigen::MatrixXd costs(allSites.size(), allSites.size()); costs.fill(-1);
@@ -1041,31 +1503,52 @@ int main(int argc, char* argv[]) {
             dists(a,b) = paths[a][b].dist;
         }
     }
+    fmt::print("\nCosts: \n{}\n\n", costs);
+    fmt::print("Dists: \n{}\n\n", dists);
 
     // Compute exploration route.
-    std::vector<Vantage> route = routeplan(allSites, dists);
+    const auto route = routeplan(allSites, costs);
+
+    if( route.size() < allSites.size() ) {
+        fmt::print("Oh no! I failed to plan a route to all vantages.\n");
+    }
 
     // Chain paths together to create the final route.
     Path path = assembleRoute(route, paths, elevationMap);
 
     // Draw the final route!
-    TerrainMap routeMap = vantageMap;
-    routeMap.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
-    for(const auto& p : path.waypoints) {
+    TerrainMapFloat routeMap = vantageMap;
+    drawCircle(routeMap, landingSiteX, landingSiteY, 100, 3.0);
+    for(const auto& p : path.states) {
         routeMap(p.i, p.j) = 100;
     }
-    routeMap.saveEXR(config->outputDir+"route.exr"); 
+    saveEXR(routeMap, config.outputDir+"route.exr"); 
 
     // Save the route to an xyz file.
     {
         std::ofstream file;
-        file.open(config->outputDir+"route.xyz");
-        for(const auto& p : path.waypoints) {
+        file.open(config.outputDir+"route.xyz");
+        for(const auto& p : path.states) {
             Vantage v;
             v.x = elevationMap.gridIndexToXCoord(p.j);
             v.y = elevationMap.gridIndexToXCoord(p.i);
-            v.z = elevationMap(p.i, p.j) + config->roverHeight;
+            v.z = elevationMap(p.i, p.j) + config.roverHeight;
             file << fmt::format("{} {} {}\n", v.x, v.y, v.z);
+        }
+        file.close();
+    }
+
+    // Save the route to a csv file.
+    {
+        std::ofstream file;
+        file.open(config.outputDir+"route.csv");
+        file << fmt::format("x,y,z,i,j,d\n");
+        for(const auto& p : path.states) {
+            Vantage v;
+            v.x = elevationMap.gridIndexToXCoord(p.j);
+            v.y = elevationMap.gridIndexToXCoord(p.i);
+            v.z = elevationMap(p.i, p.j) + config.roverHeight;
+            file << fmt::format("{},{},{},{},{},{}\n", v.x, v.y, v.z, p.i, p.j, (int)p.d);
         }
         file.close();
     }
