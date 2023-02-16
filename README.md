@@ -10,7 +10,7 @@ git clone --recursive git@github.com:PlanetaryRobotics/PitMissionPlanner.git
 ### Ubuntu 22.04
 Install build tools and dependencies.
 ```
-sudo apt install libfmt-dev libeigen3-dev cmake
+sudo apt install libfmt-dev libeigen3-dev libembree3-dev cmake g++
 ```
 
 Create a build directory and cd into it. Then, run cmake and make to build the code.
