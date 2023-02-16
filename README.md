@@ -36,7 +36,7 @@ make
 ```
 
 ### Windows
-Tell Dave to figure it out and tell you how to do it!
+Enable windows subsystem for linux and install the Ubuntu distro. Then follow the Ubuntu build instructions!
 
 ## Viewing the Results
 The .exr maps produced by the planner can be viewed using the [tev image viewer](https://github.com/Tom94/tev).
