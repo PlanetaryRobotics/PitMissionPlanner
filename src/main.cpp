@@ -160,13 +160,13 @@ double octileDistance(const Path::State& a, const Path::State& b) {
     // Branchless octile distance
     int di = std::abs(a.i-b.i);
     int dj = std::abs(a.j-b.j);
-    constexpr double diagonal = std::sqrt(2);
-    constexpr double twoCardinalMinusDiagonal = 2-diagonal;
+    double diagonal = std::sqrt(2);
+    double twoCardinalMinusDiagonal = 2-diagonal;
     return (twoCardinalMinusDiagonal*abs(di-dj) + diagonal*(di+dj)) / 2;
 }
 
 Direction directionFromTo(const Path::State& from, const Path::State& to) {
-    constexpr double tan_pi_8 = std::tan(M_PI/8.0);
+    const double tan_pi_8 = std::tan(M_PI/8.0);
 
     const int di = to.i-from.i;
     const int dj = to.j-from.j;
@@ -1503,8 +1503,8 @@ int main(int argc, char* argv[]) {
             dists(a,b) = paths[a][b].dist;
         }
     }
-    fmt::print("\nCosts: \n{}\n\n", costs);
-    fmt::print("Dists: \n{}\n\n", dists);
+    //fmt::print("\nCosts: \n{}\n\n", costs);
+    //fmt::print("Dists: \n{}\n\n", dists);
 
     // Compute exploration route.
     const auto route = routeplan(allSites, costs);

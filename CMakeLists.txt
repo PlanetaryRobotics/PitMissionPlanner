@@ -12,4 +12,8 @@ add_subdirectory(ext/)
 
 add_executable(planranger src/main.cpp src/terrainmesh.cpp src/terrainmap.cpp)
 target_include_directories(planranger PRIVATE ext/ src/)
-target_link_libraries(planranger fmt stdc++fs embree OpenMP::OpenMP_CXX miniz Eigen3::Eigen)
+target_link_libraries(planranger fmt embree OpenMP::OpenMP_CXX miniz Eigen3::Eigen)
+
+if (UNIX AND NOT APPLE)
+  target_link_libraries(planranger stdc++fs)
+endif (UNIX AND NOT APPLE)
