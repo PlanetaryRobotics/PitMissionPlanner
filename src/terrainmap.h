@@ -27,22 +27,22 @@ public:
 
     T& atIJ(int i, int j) { return operator()(i,j); }
     T& atXY(double x, double y) {
-        int j = xCoordToGridIndex(x);
-        int i = yCoordToGridIndex(y);
+        int j = x2j(x);
+        int i = y2i(y);
         return operator()(i,j);
     }
     const T& atIJ(int i, int j) const { return operator()(i,j); }
     const T& atXY(int x, int y) const {
-        int j = xCoordToGridIndex(x);
-        int i = yCoordToGridIndex(y);
+        int j = x2j(x);
+        int i = y2i(y);
         return operator()(i,j);
     }
 
-    double gridIndexToXCoord(size_t j) const { return pitch/2.0 + j*pitch; }
-    double gridIndexToYCoord(size_t i) const { return pitch/2.0 + i*pitch; }
+    double j2x(size_t j) const { return (j+0.5)*pitch; }
+    double i2y(size_t i) const { return (rows-i-0.5)*pitch; }
 
-    size_t xCoordToGridIndex(double x) const { return x/pitch; }
-    size_t yCoordToGridIndex(double y) const { return y/pitch; }
+    size_t x2j(double x) const { return x/pitch - 0.5; }
+    size_t y2i(double y) const { return rows - 0.5 - y/pitch; }
 
     T& operator()(size_t i, size_t j) { return _data[i*cols+j]; }
     const T& operator()(size_t i, size_t j) const { return _data[i*cols+j]; }
@@ -58,8 +58,8 @@ using TerrainMapU8 = TerrainMap<uint8_t>;
 
 template<typename T>
 void drawCircle(TerrainMap<T>& map, double x, double y, double val, double rad) {
-    int cj = map.xCoordToGridIndex(x);
-    int ci = map.yCoordToGridIndex(y);
+    int cj = map.x2j(x);
+    int ci = map.y2i(y);
     int R = std::ceil(rad / map.pitch);
 
     for(int i=ci-R; i<=ci+R; ++i) {
@@ -75,14 +75,8 @@ void drawCircle(TerrainMap<T>& map, double x, double y, double val, double rad) 
 
 template <typename T>
 void saveEXR(const TerrainMap<T>& map, const std::string& filename) {
-    std::vector<float> flipped(map.data().size());
-    for(int i=0; i<map.rows; ++i) {
-        for(int j=0; j<map.cols; ++j) {
-            flipped[i*map.cols+j] = static_cast<float>(map.data()[(map.rows-i-1)*map.cols+j]);
-        }
-    }
     const char *err;
-    int success = SaveEXR(flipped.data(), map.cols, map.rows, 1, 0, filename.c_str(), &err); 
+    int success = SaveEXR(map.data().data(), map.cols, map.rows, 1, 0, filename.c_str(), &err); 
 
     if( success != TINYEXR_SUCCESS ) {
         fmt::print("TINYEXR ERROR: {}\n", err);
