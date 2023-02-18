@@ -21,7 +21,7 @@ struct PlannerConfiguration {
     double landerHeight    = 1.0;       // meters
 
     double mapPitch             = 1.0;       // meters
-    int    numProbes            = 10000;     // 
+    int    numProbes            = 100000;    // 
     int    numCandidates        = 100000;    // 
     int    numVantages          = 15;        // 
     double visAngle             = 55;        // degrees
@@ -30,7 +30,7 @@ struct PlannerConfiguration {
 
     double roverHeight                 =  1.0; // meters
     double roverSpeed                  = 0.01; // m/s
-    double roverFOV                    =  120; // degrees
+    double roverFOV                    =  90; // degrees
     double roverLateralSlopeLimit      = 12.0; // degrees
     double roverLongitudinalSlopeLimit = 20.0; // degrees
     double roverPointTurnSlopeLimit    =  5.0; // degrees
