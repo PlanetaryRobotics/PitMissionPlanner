@@ -27,8 +27,8 @@ struct PlannerConfiguration {
     double landerHeight    = 1.0;       // meters
 
     double mapPitch             = 1.0;       // meters
-    int    numProbes            = 10000;     // 
-    int    numCandidates        = 10000;     // 
+    int    numProbes            = 100000;    // 
+    int    numCandidates        = 100000;    // 
     int    numVantages          = 15;        // 
     double visAngle             = 55;        // degrees
     double maxVisRange          = 300;       // meters
@@ -910,226 +910,17 @@ std::vector<Path> multipathplan(const SlopeAtlas& slopeAtlas,
     return paths;
 }
 
-std::vector<int> routeplan(const std::vector<Path::State> allSites,
-                                   const Eigen::MatrixXd& costs) {
-    std::vector<int> routeIndices;
-    std::vector<bool> visited(allSites.size(), false);
-    int visitedCount = 1;
-
-    int currentIdx = 0;
-    visited[currentIdx] = true;
-    routeIndices.push_back(currentIdx);
-    double routeCost = 0;
-
-    // Nearest Neighbor TSP Heuristic
-    while(visitedCount < allSites.size()) {
-        int minCostIdx = -1;
-        double minCost = std::numeric_limits<double>::infinity();
-        for(int i=0; i<costs.rows(); ++i) {
-            const auto cost = costs(currentIdx, i);
-            if( !visited[i] && cost >= 0 && cost < minCost ) {
-                minCostIdx = i;
-                minCost = cost;
-            }
-        }
-
-        // If there are no valid routes to another city, give up.
-        if( minCostIdx < 0 ) { break; }
-
-        currentIdx = minCostIdx;
-        routeIndices.push_back(minCostIdx);
-        visited[minCostIdx] = true;
-        routeCost += minCost;
-        visitedCount++;
-    }
-    return routeIndices;
-}
-
-std::vector<int> routeplan2(const std::vector<Path::State> allSites,
-                            const Eigen::MatrixXd& costs,
-                            int maxIterations=10000, bool do2opt = false) {
-
-    // Use the farthest-first insertion heuristic to solve the traveling salesman problem.
-
-    auto computeRouteCost = [&costs](const std::vector<int>& route) -> double {
-        double cost = 0;
-        for(int i=0; i<route.size()-1; ++i) {
-            double dc = costs(route[i], route[i+1]);
-            if( dc <= 0 ) { return -1; } // FIXME: What should I do here instead? Assert?
-            cost += dc;
-        }
-        // There is an implicit edge from the last site to the first one.
-        cost += costs(route[0], route[route.size()-1]);
-        return cost;
-    };
-
-    auto distFromRoute = [&costs](const int s, const std::vector<int>& route) -> double {
-        double minDist = std::numeric_limits<double>::infinity();
-        for(int i=0; i<route.size(); ++i) {
-            double d = costs(s, i);
-            if( d > 0 && d < minDist ) { minDist = d; }
-        }
-        return minDist;
-    };
-
-    auto findFarthest = [&distFromRoute, &costs](const std::vector<int>& route,
-                                                 const std::vector<bool>& visited) -> int {
-        int farthestIdx = 0;
-        double maxDist = -1;
-        for(int i=0; i<costs.rows(); ++i) {
-            if( visited[i] ) { continue; }
-            double d = distFromRoute(i, route);
-            if( d > 0 && d > maxDist ) {
-                maxDist = d;
-                farthestIdx = i;
-            }
-        }
-        if( maxDist <= 0 ) { return -1; }
-        return farthestIdx;
-    };
-
-    // Farthest Insertion
-    std::vector<int> routeIndices;
-    double routeCost = 0;
-    {
-        std::vector<bool> visited(allSites.size(), false);
-
-        // Insert the landing site into the tour.
-        routeIndices.push_back(0);
-        visited[0] = true;
-
-        while( routeIndices.size() < allSites.size() &&
-               routeIndices.size() <= maxIterations ) {
-            // Find the site not in the tour that when inserted
-            // into the tour produces the shortest new tour.
-            std::vector<int> bestNewRoute;
-            double bestNewCost = std::numeric_limits<double>::infinity(); 
-            int bestNewSite = 0; 
-            int bestNewInsert = 0;
-
-            // Loop over all not-yet-visited sites.
-            int newSite = findFarthest(routeIndices, visited);
-
-            // Try inserting the newSite into every gap in the existing route.
-            // Make sure not to insert in front of the landing site since
-            // we want the route to always begin at the landing site.
-            for(int newInsert=1; newInsert<=routeIndices.size(); ++newInsert) {
-                std::vector<int> tmpRoute = routeIndices;
-                tmpRoute.insert(tmpRoute.begin()+newInsert, newSite);
-                double tmpCost = computeRouteCost(tmpRoute);
-                if( tmpCost < bestNewCost ) {
-                    bestNewCost  = tmpCost;
-                    bestNewRoute = tmpRoute;
-                    bestNewSite  = newSite;
-                    bestNewInsert = newInsert;
-                }
-            }
-
-            // Insert the site.
-            routeIndices = bestNewRoute;
-            routeCost = bestNewCost;
-            visited[bestNewSite] = true;
-        }
-    }
-    return routeIndices;
-}
-
-std::vector<int> routeplan3(const std::vector<Path::State> allSites,
-                            const Eigen::MatrixXd& costs) {
-
-    auto computeRouteCost = [&costs](const std::vector<int>& route) -> double {
-        double cost = 0;
-        for(int i=0; i<route.size()-1; ++i) {
-            double dc = costs(route[i], route[i+1]);
-            cost += dc;
-        }
-        // There is an implicit edge from the last site to the first one.
-        cost += costs(route[0], route[route.size()-1]);
-        return cost;
-    };
-
-    // Compute the centroid of the sites.
-    Path::State centroid;
-    for(const auto& site : allSites) {
-        centroid.i += site.i;
-        centroid.j += site.j;
-    }
-    centroid.i /= allSites.size();
-    centroid.j /= allSites.size();
-
-    // Argsort sites ccw around the centroid of all sites.
-    std::vector<double> angles;
-    for(const auto& site : allSites) {
-        double angle = std::atan2(site.i-centroid.i, site.j-centroid.j);
-        angles.push_back(angle);
-    }
-    std::vector<int> fwdsort(allSites.size());
-    std::iota(fwdsort.begin(), fwdsort.end(), 0);
-    std::sort(fwdsort.begin(), fwdsort.end(),
-              [&angles](int l, int r) -> bool {
-                  return angles[l] < angles[r];
-              });
-    std::vector<int> bwdsort(allSites.size());
-    std::iota(bwdsort.begin(), bwdsort.end(), 0);
-    std::sort(bwdsort.begin(), bwdsort.end(),
-              [&fwdsort](int l, int r) -> bool {
-                  return fwdsort[l] < fwdsort[r];
-              });
-    assert(bwdsort[fwdsort[0]] == 0);
-
-    auto nextCCW = [&allSites](int i) -> int {
-        return (i+1)%allSites.size();
-    };
-    auto nextCW = [&allSites](int i) -> int {
-        return (i-1+allSites.size())%allSites.size();
-    };
-
-    // Start walking clockwise around the pit.
-    int landingSiteIndex = fwdsort[0];
-    int reverseSiteIndex = nextCCW(landingSiteIndex);
-
-    std::vector<int> cwRoute;
-
-    int siteIndex = landingSiteIndex;
-    while(cwRoute.size() < allSites.size()) {
-        cwRoute.push_back(bwdsort[siteIndex]);
-
-        int nextSiteIndex = nextCW(siteIndex);
-        double reverseCost = costs(siteIndex, reverseSiteIndex);
-        double forwardCost = costs(siteIndex, nextSiteIndex);
-        fmt::print("S{} N{} R{} F{}\n",
-            siteIndex, nextSiteIndex, reverseCost, forwardCost);
-        if( reverseCost > 0 && reverseCost < forwardCost ) {
-            siteIndex = reverseSiteIndex;
-            break;
-        }
-        siteIndex = nextSiteIndex;
-    }
-    /*
-    while(cwRoute.size() < allSites.size()) {
-        cwRoute.push_back(bwdsort[siteIndex]);
-        siteIndex = nextCCW(siteIndex);
-    }
-    */
-    double cwCost = computeRouteCost(cwRoute);
-    for(const auto& i : cwRoute) {
-        fmt::print("{} ", i);
-    }
-    fmt::print("\n");
-    return cwRoute;
-}
-
-std::vector<int> routeplan4(const std::vector<Path::State> allSites,
-                            const Eigen::MatrixXd& costs) {
+std::pair<std::vector<int>,int64_t> solveTSP(const Eigen::MatrixXd& costs, int depot=0) {
     using namespace operations_research;
 
     struct DataModel {
         std::vector<std::vector<int64_t>> distance_matrix;
         const int num_vehicles = 1;
-        const RoutingIndexManager::NodeIndex depot{0};
+        RoutingIndexManager::NodeIndex depotNode;
     };
 
     DataModel data;
+    data.depotNode = RoutingIndexManager::NodeIndex{depot};
 
     data.distance_matrix.resize(costs.rows());
     for(int i=0; i<costs.rows(); ++i) {
@@ -1142,7 +933,9 @@ std::vector<int> routeplan4(const std::vector<Path::State> allSites,
         }
     }
 
-    RoutingIndexManager manager(data.distance_matrix.size(), data.num_vehicles, data.depot);
+    RoutingIndexManager manager(data.distance_matrix.size(),
+                                data.num_vehicles,
+                                data.depotNode);
     RoutingModel routing(manager);
 
     const int transit_callback_index = routing.RegisterTransitCallback(
@@ -1160,111 +953,61 @@ std::vector<int> routeplan4(const std::vector<Path::State> allSites,
 
     const Assignment* solution = routing.SolveWithParameters(searchParameters);
 
-    std::vector<int> routeIndices;
-
     // Inspect solution.
-    // LOG(INFO) << "Objective: " << solution->ObjectiveValue() << " miles";
-    int64_t index = routing.Start(0);
-    // LOG(INFO) << "Route:";
+    std::vector<int> routeIndices;
     int64_t distance{0};
-    std::stringstream route;
+    int64_t index = routing.Start(0);
     while (routing.IsEnd(index) == false) {
       routeIndices.push_back(index);
-      route << manager.IndexToNode(index).value() << " -> ";
       int64_t previous_index = index;
       index = solution->Value(routing.NextVar(index));
       distance += routing.GetArcCostForVehicle(previous_index, index, int64_t{0});
     }
-    // LOG(INFO) << route.str() << manager.IndexToNode(index).value();
-    // LOG(INFO) << "Route distance: " << distance << "miles";
-    // LOG(INFO) << "";
-    // LOG(INFO) << "Advanced usage:";
-    // LOG(INFO) << "Problem solved in " << routing.solver()->wall_time() << "ms";
 
     // FIXME(Jordan): Remove this! This is temporary to make sure
     // the route visualization shows the edge that returns to the depot (landing site).
-    routeIndices.push_back(0);
-    return routeIndices;
+    return std::make_pair(routeIndices, distance);
 }
 
-std::vector<int> routeopt(const std::vector<int> route,
-                          const Eigen::MatrixXd& costs,
-                          int maxIter=10) {
+std::vector<int> routeplan(const Eigen::MatrixXd& costs) {
+    int SITES = costs.rows();
+    double INF = 1e12;
 
-    auto computeRouteCost = [&costs](const std::vector<int>& route) -> double {
-        double cost = 0;
-        for(int i=0; i<route.size()-1; ++i) {
-            double dc = costs(route[i], route[i+1]);
-            if( dc <= 0 ) { return -1; } // FIXME: What should I do here instead? Assert?
-            cost += dc;
+    std::vector<int> minRoute;
+    int64_t minCost = INF;
+
+    for(int endpoint=1; endpoint<SITES; ++endpoint) {
+        Eigen::MatrixXd augCosts(SITES+1, SITES+1);
+        augCosts.fill(INF);
+        augCosts.block(0,0, costs.rows(), costs.cols()) = costs;
+        augCosts(SITES, SITES) = 0.0;
+
+        // START
+        augCosts(SITES, 0) = 0.0;
+        augCosts(0, SITES) = 0.0;
+
+        // END
+        augCosts(SITES, endpoint) = 0.0;
+        augCosts(endpoint, SITES) = 0.0;
+
+        fmt::print("AUGMENTED COSTS:\n");
+        fmt::print("{}\n", augCosts);
+        fmt::print("SITES: {}\n", SITES);
+
+        auto [route, cost] = solveTSP(augCosts, SITES); 
+        if( cost < minCost ) {
+            minRoute = route;
+            minCost = cost;
         }
-        return cost;
-    };
 
-    std::vector<int> routeIndices = route;
-    double routeCost = computeRouteCost(routeIndices);
+        fmt::print("COST {} ROUTE:\n", cost);
+        for(const auto& x : route) { fmt::print("{} ", x); }
+        fmt::print("\n");
+    }
 
-    // Two-Opt Route Improvement
-    int iterations = 0;
-    bool improved = false;
-    do {
-        fmt::print("Improving route [{}] ...\n", iterations);
-        fmt::print("Route cost: {}\n", routeCost);
-        improved = false;
-        for(int i=1; i<routeIndices.size()-1; ++i) {
-
-            // Don't rewire the segment 0<->1 because that segment
-            // connects the landing site to the closest vantage.
-            if( i == 1 ) { continue; }
-
-            // NOTES (Jordan):
-            // There is a tension here.
-            // On the one hand, we want a short total path.
-            // On the other hand, we want to visit vantages *early*.
-            // I think we should apply a discount factor that values
-            // vantages less if they are visited later in time.
-            // Then we want a short route that captures the most
-            // discounted coverage. I guess the discount factor will be
-            // a configurable parameter.
-
-            for(int j=i+1; j<routeIndices.size(); ++j) {
-                std::vector<int> newIndices;
-
-                // Take route[0] to route[i-1] and add them to the new route.
-                for(int k=0; k<=i-1; ++k) {
-                    newIndices.push_back(routeIndices[k]);
-                }
-                // Take route[i] to route[j] and add them in reverse order.
-                for(int k=j; k>=i; --k) {
-                    newIndices.push_back(routeIndices[k]);
-                }
-                // Take route[j+1] to the end and add them to the new route.
-                for(int k=j+1; k<routeIndices.size(); ++k) {
-                    newIndices.push_back(routeIndices[k]);
-                }
-
-                // Calculate the length of the new route.
-                // If any segment is invalid (dist < 0), forget this swap.
-                double dist = 0;
-                dist = computeRouteCost(newIndices);
-                if( dist <= 0 ) { continue; }
-
-                // This route is shorter! Keep it.
-                if( dist < routeCost ) {
-                    fmt::print("[{}] Swap {}<->{} Length: {}\n", iterations, i,j, dist);
-                    for(const auto& x : routeIndices) { fmt::print("{} ", x); }
-                    fmt::print("\n");
-                    for(const auto& x : newIndices) { fmt::print("{} ", x); }
-                    fmt::print("\n");
-
-                    routeCost = dist;
-                    routeIndices = newIndices;
-                    improved = true;
-                }
-            }
-        }
-    } while( improved && iterations++ < maxIter );
-    return routeIndices;
+    // Remove the imaginary depot city from the beginning of the route.
+    minRoute.erase(minRoute.begin());
+    return minRoute;
 }
 
 std::vector<std::vector<Path>> planAllPairs(const std::vector<Path::State>& sites,
@@ -1627,30 +1370,11 @@ int main(int argc, char* argv[]) {
     fmt::print("\nDists: \n{}\n\n", dists);
 
     // Compute exploration route.
-    //auto route = routeplan2(allSites, dists, 1000, true);
-    auto route = routeplan4(allSites, dists);
+    auto route = routeplan(dists);
 
     if( route.size() < allSites.size() ) {
         fmt::print("Oh no! I failed to plan a route to all vantages.\n");
     }
-
-    // Chain paths together to create the final path.
-    {
-        Path path = assembleRoute(route, paths);
-        fmt::print("Final Path Cost: {}\n", path.cost);
-        fmt::print("Final Path Dist: {}\n", path.dist);
-
-        // Draw the final route!
-        TerrainMapFloat routeMap = vantageMap;
-        drawCircle(routeMap, landingSiteX, landingSiteY, 100, 3.0);
-        for(const auto& p : path.states) {
-            routeMap(p.i, p.j) = 100;
-        }
-        saveEXR(routeMap, config.outputDir+"route.exr"); 
-    }
-
-    // Apply TSP heuristics to improve the route.
-    route = routeopt(route, costs);
 
     // Chain paths together to create the final path.
     Path path = assembleRoute(route, paths);
@@ -1663,7 +1387,7 @@ int main(int argc, char* argv[]) {
     for(const auto& p : path.states) {
         routeMap(p.i, p.j) = 100;
     }
-    saveEXR(routeMap, config.outputDir+"routeopt.exr"); 
+    saveEXR(routeMap, config.outputDir+"route.exr"); 
 
     // Save the route to an xyz file.
     {
