@@ -27,8 +27,8 @@ struct PlannerConfiguration {
     double landerHeight    = 1.0;       // meters
 
     double mapPitch             = 1.0;       // meters
-    int    numProbes            = 100000;    // 
-    int    numCandidates        = 100000;    // 
+    int    numProbes            = 10000;     // 
+    int    numCandidates        = 10000;     // 
     int    numVantages          = 15;        // 
     double visAngle             = 55;        // degrees
     double maxVisRange          = 300;       // meters
@@ -1370,7 +1370,7 @@ int main(int argc, char* argv[]) {
     fmt::print("\nDists: \n{}\n\n", dists);
 
     // Compute exploration route.
-    auto route = routeplan(dists);
+    auto route = routeplan(costs);
 
     if( route.size() < allSites.size() ) {
         fmt::print("Oh no! I failed to plan a route to all vantages.\n");
@@ -1393,11 +1393,13 @@ int main(int argc, char* argv[]) {
     {
         std::ofstream file;
         file.open(config.outputDir+"route.xyz");
+        int dz=0;
         for(const auto& p : path.states) {
             Vantage v;
             v.x = elevationMap.j2x(p.j);
-            v.y = elevationMap.j2x(p.i);
-            v.z = elevationMap(p.i, p.j) + config.roverHeight;
+            v.y = elevationMap.i2y(p.i);
+            v.z = elevationMap(p.i, p.j) + config.roverHeight + dz;
+            dz++;
             file << fmt::format("{} {} {}\n", v.x, v.y, v.z);
         }
         file.close();
