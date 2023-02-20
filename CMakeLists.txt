@@ -3,6 +3,8 @@ cmake_minimum_required(VERSION 3.13)
 project(planranger C CXX)
 set(CMAKE_CXX_STANDARD 20)
 
+set(DEFAULT_BUILD_TYPE "Release")
+
 find_package(fmt 3.3 REQUIRED)
 find_package(embree 3.0 REQUIRED)
 find_package(OpenMP REQUIRED)
