@@ -1,0 +1,13 @@
+[planner]
+mapPitch = 2.0
+landingSiteX = 100
+landingSiteY = 200
+numProbes = 10000
+numCandidates = 30000
+numVantages = 15
+visAngle = 55
+
+[rover]
+roverHeight = 2.0
+roverMaxSlope = 20.0
+roverSpeed = 0.03

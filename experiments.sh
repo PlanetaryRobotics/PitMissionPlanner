@@ -14,3 +14,4 @@ mkdir -p results/slope15
 
 mkdir -p results/slope20
 ./build/planranger -p=0.25 -va=55 -nv=24 -rs=20 meshes/lmp_crop.ply results/slope20/
+

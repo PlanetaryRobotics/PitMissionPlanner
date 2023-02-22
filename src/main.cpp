@@ -8,6 +8,8 @@
 #include <optional>
 #include <unordered_set>
 #include <iostream>
+#include <tomlplusplus/toml.hpp>
+
 
 
 struct PlannerConfiguration {
@@ -25,6 +27,25 @@ struct PlannerConfiguration {
     int    numVantages     = 15;        // 
     double visAngle        = 55;        // degrees
 };
+
+PlannerConfiguration parseConfigFile(const std::string& fileName) {
+    PlannerConfiguration cfg;
+    auto config = toml::parse_file(fileName);
+    cfg.mapPitch = config["planner"]["mapPitch"].value_or(cfg.mapPitch);
+    cfg.landingSiteX = config["planner"]["landingSiteX"].value_or(cfg.landingSiteX);
+    cfg.landingSiteY = config["planner"]["landingSiteY"].value_or(cfg.landingSiteY);
+    cfg.numProbes = config["planner"]["numProbes"].value_or(cfg.numProbes);
+    cfg.numCandidates = config["planner"]["numCandidates"].value_or(cfg.numCandidates);
+    cfg.numVantages = config["planner"]["numVantages"].value_or(cfg.numVantages);
+    cfg.visAngle = config["planner"]["visAngle"].value_or(cfg.visAngle);
+    cfg.roverHeight = config["rover"]["roverHeight"].value_or(cfg.roverHeight);
+    cfg.roverMaxSlope = config["rover"]["roverMaxSlope"].value_or(cfg.roverMaxSlope);
+    cfg.roverSpeed = config["rover"]["roverSpeed"].value_or(cfg.roverSpeed);
+  
+
+    return cfg; 
+
+}
 
 std::optional<PlannerConfiguration> parseCommandLine(int argc, char* argv[]) {
     PlannerConfiguration cfg;
@@ -698,6 +719,19 @@ std::vector<Vantage> sortCCW(const std::vector<Vantage> vantages, double siteX, 
 }
 
 int main(int argc, char* argv[]) {
+    const auto newConfig = parseConfigFile("../missions/example.toml");
+    fmt::print("mapPitch = {} \n", newConfig.mapPitch);
+    fmt::print("landingSiteX = {} \n", newConfig.landingSiteX);
+    fmt::print("landingSiteY = {} \n", newConfig.landingSiteY);
+    fmt::print("numProbes = {} \n", newConfig.numProbes);
+    fmt::print("numCandidates = {}\n", newConfig.numCandidates);
+    fmt::print("numVantages = {}\n", newConfig.numVantages);
+    fmt::print("visAngle = {}\n", newConfig.visAngle);
+
+    fmt::print("roverHeight = {} \n", newConfig.roverHeight);
+    fmt::print("roverMaxSlope= {} \n", newConfig.roverMaxSlope);
+    fmt::print("roverSpeed = {} \n", newConfig.roverSpeed);
+    return 0;
 
     // Configure the planner.
     const auto config = parseCommandLine(argc, argv);
