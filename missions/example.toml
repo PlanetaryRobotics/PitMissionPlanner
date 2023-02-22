@@ -5,9 +5,12 @@ landingSiteY = 200
 numProbes = 10000
 numCandidates = 40000
 numVantages = 15
-visAngle = 55
+visAngle = 5
 
 [rover]
 roverHeight = 2.0
 roverMaxSlope = 20.0
 roverSpeed = 0.03
+
+[mesh]
+meshFile = "../meshes/lmp_crop.ply"

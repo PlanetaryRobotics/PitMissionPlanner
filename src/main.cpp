@@ -26,6 +26,7 @@ struct PlannerConfiguration {
     int    numCandidates   = 10000;     // 
     int    numVantages     = 15;        // 
     double visAngle        = 55;        // degrees
+    
 };
 
 PlannerConfiguration parseConfigFile(const std::string& fileName) {
@@ -41,13 +42,13 @@ PlannerConfiguration parseConfigFile(const std::string& fileName) {
     cfg.roverHeight = config["rover"]["roverHeight"].value_or(cfg.roverHeight);
     cfg.roverMaxSlope = config["rover"]["roverMaxSlope"].value_or(cfg.roverMaxSlope);
     cfg.roverSpeed = config["rover"]["roverSpeed"].value_or(cfg.roverSpeed);
-  
+    cfg.meshfile= config["mesh"]["meshfile"].value_or(cfg.meshfile);
 
     return cfg; 
 
 }
 
-std::optional<PlannerConfiguration> parseCommandLine(int argc, char* argv[]) {
+PlannerConfiguration parseCommandLine(int argc, char* argv[]) {
     PlannerConfiguration cfg;
 
     argh::parser cmdl(argc, argv);
@@ -66,10 +67,9 @@ std::optional<PlannerConfiguration> parseCommandLine(int argc, char* argv[]) {
         fmt::print("\tnc: the number of candidate vantages to evaluate.\n");
         fmt::print("\tnv: the number of vantages to select from the candidates.\n");
         fmt::print("\tva: the visibility angle [deg] beyond which a view is not counted.\n");
-        return {};
+        exit(0);
     }
-
-    cmdl(1, cfg.meshfile) >> cfg.meshfile;
+    //cmdl(1, argv[1]) >> fileName;
     cmdl(2, cfg.outputDir) >> cfg.outputDir;
     cfg.outputDir = cfg.outputDir + "/";
 
@@ -83,7 +83,7 @@ std::optional<PlannerConfiguration> parseCommandLine(int argc, char* argv[]) {
     cmdl("nc", cfg.numCandidates) >> cfg.numCandidates;
     cmdl("nv", cfg.numVantages) >> cfg.numVantages;
     cmdl("va", cfg.visAngle) >> cfg.visAngle;
-    return std::make_optional(cfg);
+    return cfg;
 }
 
 std::tuple<TerrainMap,TerrainMap,TerrainMap>
@@ -719,33 +719,43 @@ std::vector<Vantage> sortCCW(const std::vector<Vantage> vantages, double siteX, 
 }
 
 int main(int argc, char* argv[]) {
-    const auto newConfig = parseConfigFile("../missions/example.toml");
-    fmt::print("mapPitch = {} \n", newConfig.mapPitch);
-    fmt::print("landingSiteX = {} \n", newConfig.landingSiteX);
-    fmt::print("landingSiteY = {} \n", newConfig.landingSiteY);
-    fmt::print("numProbes = {} \n", newConfig.numProbes);
-    fmt::print("numCandidates = {}\n", newConfig.numCandidates);
-    fmt::print("numVantages = {}\n", newConfig.numVantages);
-    fmt::print("visAngle = {}\n", newConfig.visAngle);
+    // Configuration parameters are default if no config file is provided.
+    PlannerConfiguration config;
 
-    fmt::print("roverHeight = {} \n", newConfig.roverHeight);
-    fmt::print("roverMaxSlope= {} \n", newConfig.roverMaxSlope);
-    fmt::print("roverSpeed = {} \n", newConfig.roverSpeed);
-    return 0;
+    // If config file is provided (on the command line), set parameters using it.
+    if( argc > 1 && std::string(argv[1]).find(".toml") != std::string::npos ) {
+        config = parseConfigFile(argv[1]);
+    }
+    config = parseCommandLine(argc, argv);
+
+    // If other configuration values are provided on the command line, they should overrid the config file and the default values.jj:w
+
+    // const auto newConfig = parseConfigFile("../missions/example.toml");
+    fmt::print("mapPitch = {} \n", config.mapPitch);
+    fmt::print("landingSiteX = {} \n", config.landingSiteX);
+    fmt::print("landingSiteY = {} \n", config.landingSiteY);
+    fmt::print("numProbes = {} \n", config.numProbes);
+   fmt::print("numCandidates = {}\n", config.numCandidates);
+     fmt::print("numVantages = {}\n", config.numVantages);
+     fmt::print("visAngle = {}\n", config.visAngle);
+
+    // fmt::print("roverHeight = {} \n", newConfig.roverHeight);
+    // fmt::print("roverMaxSlope= {} \n", newConfig.roverMaxSlope);
+    // fmt::print("roverSpeed = {} \n", newConfig.roverSpeed);
+    // return 0;
 
     // Configure the planner.
-    const auto config = parseCommandLine(argc, argv);
-    if( !config ) { return 0; }
+    //const auto config = parseCommandLine(argc, argv);
 
     // Read the terrain mesh.
-    TerrainMesh tmesh(config->meshfile);
+    TerrainMesh tmesh(config.meshfile);
 
     // Construct elevation, slope, and priority maps.
-    auto [elevationMap, slopeMap, priorityMap] = buildTerrainMaps(tmesh, config->mapPitch);
+    auto [elevationMap, slopeMap, priorityMap] = buildTerrainMaps(tmesh, config.mapPitch);
 
     // Compute landing site coordinates.
-    double landingSiteX = config->landingSiteX;
-    double landingSiteY = config->landingSiteY;
+    double landingSiteX = config.landingSiteX;
+    double landingSiteY = config.landingSiteY;
     double landingSiteZ = elevationMap.atXY(landingSiteX, landingSiteY);
 
     int landingSiteI = elevationMap.yCoordToGridIndex(landingSiteY);
@@ -761,23 +771,23 @@ int main(int argc, char* argv[]) {
     // Construct lander communications map.
     TerrainMap commsMap = buildCommsMap(tmesh, elevationMap,
                                             landingSiteX, landingSiteY,
-                                            config->landerHeight, config->roverHeight);
+                                            config.landerHeight, config.roverHeight);
 
     // Map low-slope, communicable terrain.
-    const auto safeMap = buildSafeMap(commsMap, slopeMap, config->roverMaxSlope);
+    const auto safeMap = buildSafeMap(commsMap, slopeMap, config.roverMaxSlope);
 
     // Flood-fill reachable safe terrain.
-    TerrainMap reachMap = buildReachabilityMap(safeMap, landingSiteX, landingSiteY, config->roverMaxSlope);
+    TerrainMap reachMap = buildReachabilityMap(safeMap, landingSiteX, landingSiteY, config.roverMaxSlope);
 
     // Generate visibility probes.
-    auto [probes, probeMap] = generateVisibilityProbes(priorityMap, elevationMap, config->numProbes, config->roverHeight);
+    auto [probes, probeMap] = generateVisibilityProbes(priorityMap, elevationMap, config.numProbes, config.roverHeight);
 
     // Generate candidate vantages.
     auto [candidates, candidateMap] = generateVantageCandidates(tmesh, reachMap, elevationMap, probes,
-                                                                config->numCandidates, config->roverHeight, config->visAngle);
+                                                                config.numCandidates, config.roverHeight, config.visAngle);
 
     // Select the best vantages from all of the candidates.
-    auto vantages = selectVantages(candidates, probes, config->numVantages);
+    auto vantages = selectVantages(candidates, probes, config.numVantages);
 
     // Construct the vantageMap.
     auto vantageMap = slopeMap;
@@ -788,7 +798,7 @@ int main(int argc, char* argv[]) {
             int j = vantageMap.xCoordToGridIndex(v.x);
             int i = vantageMap.yCoordToGridIndex(v.y);
             double markerValue = 120 + 10 * v.totalCoverage / maxCoverage;
-            int R = 2.0 / config->mapPitch;
+            int R = 2.0 / config.mapPitch;
             for(int ii=-R; ii<=R; ++ii) {
                 for(int jj=-R; jj<=R; ++jj) {
                     if( ii*ii + jj*jj <= R*R ) {
@@ -800,15 +810,15 @@ int main(int argc, char* argv[]) {
     }
 
     // Map combined coverage from all vantages.
-    auto coverageMap = buildCoverageMap(tmesh, elevationMap, vantages, config->roverHeight, config->visAngle);
+    auto coverageMap = buildCoverageMap(tmesh, elevationMap, vantages, config.roverHeight, config.visAngle);
 
     // Save landing site and vantages to xyz file.
     {
         std::ofstream file;
-        file.open(config->outputDir+"sites.xyz");
+        file.open(config.outputDir+"sites.xyz");
         file << fmt::format("{} {} {}\n", landingSiteX, landingSiteY, landingSiteZ);
         for(const auto& v : vantages) {
-            file << fmt::format("{} {} {}\n", v.x, v.y, v.z + config->roverHeight);
+            file << fmt::format("{} {} {}\n", v.x, v.y, v.z + config.roverHeight);
         }
         file.close();
     }
@@ -818,62 +828,62 @@ int main(int argc, char* argv[]) {
         {
             auto map = elevationMap;
             map.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
-            map.saveEXR(config->outputDir+"elevation.exr");
+            map.saveEXR(config.outputDir+"elevation.exr");
         }
         {
             auto map = slopeMap;
             map.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
-            map.saveEXR(config->outputDir+"slope.exr");
+            map.saveEXR(config.outputDir+"slope.exr");
         }
         {
             auto map = priorityMap;
             map.drawCircle(landingSiteX, landingSiteY, 10, 4.0);
-            map.saveEXR(config->outputDir+"priority.exr");
+            map.saveEXR(config.outputDir+"priority.exr");
         }
         {
             auto map = reachMap;
             map.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
-            map.saveEXR(config->outputDir+"reach.exr");
+            map.saveEXR(config.outputDir+"reach.exr");
         }
         {
             auto map = commsMap;
             map.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
-            map.saveEXR(config->outputDir+"comms.exr");
+            map.saveEXR(config.outputDir+"comms.exr");
         }
         {
             auto map = safeMap;
             map.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
-            map.saveEXR(config->outputDir+"safe.exr");
+            map.saveEXR(config.outputDir+"safe.exr");
         }
         {
             auto map = probeMap;
             map.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
-            map.saveEXR(config->outputDir+"probes.exr");
+            map.saveEXR(config.outputDir+"probes.exr");
         }
         {
             auto map = candidateMap;
             map.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
-            map.saveEXR(config->outputDir+"candidates.exr");
+            map.saveEXR(config.outputDir+"candidates.exr");
         }
         {
             auto map = vantageMap;
             map.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
-            map.saveEXR(config->outputDir+"vantages.exr");
+            map.saveEXR(config.outputDir+"vantages.exr");
         }
         {
             auto map = coverageMap;
             map.drawCircle(landingSiteX, landingSiteY, 100, 4.0);
-            map.saveEXR(config->outputDir+"coverage.exr");
+            map.saveEXR(config.outputDir+"coverage.exr");
         }
         for(int vi=0; vi<vantages.size(); ++vi) {
             std::vector<Vantage> tmp;
             tmp.push_back(vantages[vi]);
-            auto coverageMap = buildCoverageMap(tmesh, elevationMap, tmp, config->roverHeight, config->visAngle);
+            auto coverageMap = buildCoverageMap(tmesh, elevationMap, tmp, config.roverHeight, config.visAngle);
             int j = vantageMap.xCoordToGridIndex(vantages[vi].x);
             int i = vantageMap.yCoordToGridIndex(vantages[vi].y);
             coverageMap.drawCircle(vantages[vi].x, vantages[vi].y, vantages.size()+1, 3.0);
             coverageMap.drawCircle(landingSiteX, landingSiteY, vantages.size()+10, 4.0);
-            coverageMap.saveEXR(config->outputDir+fmt::format("coverage_{:02}.exr",vi));
+            coverageMap.saveEXR(config.outputDir+fmt::format("coverage_{:02}.exr",vi));
         }
     }
 
@@ -955,12 +965,12 @@ int main(int argc, char* argv[]) {
             routeMap(p.i, p.j) = 100;
         }
     }
-    routeMap.saveEXR(config->outputDir+"route.exr"); 
+    routeMap.saveEXR(config.outputDir+"route.exr"); 
 
     // Save route to xyz file.
     {
         std::ofstream file;
-        file.open(config->outputDir+"route.xyz");
+        file.open(config.outputDir+"route.xyz");
         for(int i=0; i<route.size()-1; ++i) {
             Vantage v0 = route[i]; 
             Vantage v1 = route[i+1]; 
@@ -974,7 +984,7 @@ int main(int argc, char* argv[]) {
                 Vantage v;
                 v.x = elevationMap.gridIndexToXCoord(p.j);
                 v.y = elevationMap.gridIndexToXCoord(p.i);
-                v.z = elevationMap(p.i, p.j) + config->roverHeight;
+                v.z = elevationMap(p.i, p.j) + config.roverHeight;
                 file << fmt::format("{} {} {}\n", v.x, v.y, v.z);
             }
         }
