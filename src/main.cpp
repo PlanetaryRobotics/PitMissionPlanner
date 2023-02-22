@@ -442,7 +442,7 @@ TerrainMapU8 buildReachabilityMap(const TerrainMapFloat& commsMap,
 
     int iterations = 0;
     while( !open.empty() ) {
-        if( iterations++ % (1<<18) ) {
+        if( iterations++ % (1<<14) == 0 ) {
             fmt::print("[{}] Building reach map.\n", iterations);
         }
 
