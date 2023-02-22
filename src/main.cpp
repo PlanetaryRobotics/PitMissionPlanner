@@ -963,9 +963,6 @@ std::pair<std::vector<int>,int64_t> solveTSP(const Eigen::MatrixXd& costs, int d
       index = solution->Value(routing.NextVar(index));
       distance += routing.GetArcCostForVehicle(previous_index, index, int64_t{0});
     }
-
-    // FIXME(Jordan): Remove this! This is temporary to make sure
-    // the route visualization shows the edge that returns to the depot (landing site).
     return std::make_pair(routeIndices, distance);
 }
 
@@ -1007,6 +1004,15 @@ std::vector<int> routeplan(const Eigen::MatrixXd& costs) {
 
     // Remove the imaginary depot city from the beginning of the route.
     minRoute.erase(minRoute.begin());
+
+    // Because of symmetry, the route may traverse
+    // from the endpoint to the landing site.
+    // If the route is backward, flip it!
+    if( minRoute[0] != 0 ) {
+        std::reverse(minRoute.begin(), minRoute.end());
+    }
+    assert(minRoute[0] == 0);
+
     return minRoute;
 }
 
@@ -1239,29 +1245,70 @@ int main(int argc, char* argv[]) {
         }
         {
             auto map = slopeAtlas.absolute;
-            drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
+            //drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
             saveEXR(map, config.outputDir+"slope.exr");
+            savePFM(map, config.outputDir+"slope.pfm");
         }
         {
             auto map = slopeAtlas.north;
-            drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
+            //drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
             saveEXR(map, config.outputDir+"slopeN.exr");
+            savePFM(map, config.outputDir+"slopeN.pfm");
         }
         {
             auto map = slopeAtlas.east;
-            drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
+            //drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
             saveEXR(map, config.outputDir+"slopeE.exr");
+            savePFM(map, config.outputDir+"slopeE.pfm");
         }
         {
             auto map = slopeAtlas.northeast;
-            drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
+            //drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
             saveEXR(map, config.outputDir+"slopeNE.exr");
+            savePFM(map, config.outputDir+"slopeNE.pfm");
         }
         {
             auto map = slopeAtlas.southeast;
-            drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
+            //drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
             saveEXR(map, config.outputDir+"slopeSE.exr");
+            savePFM(map, config.outputDir+"slopeSE.pfm");
         }
+
+
+        auto negate = [](const TerrainMapFloat& m) {
+            TerrainMapFloat newm = m;
+            for(int i=0; i<newm.rows; ++i) {
+            for(int j=0; j<newm.cols; ++j) {
+                newm(i,j) = -1*m(i,j);
+            }}
+            return newm;
+        };
+        {
+            auto map = negate(slopeAtlas.north);
+            //drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
+            saveEXR(map, config.outputDir+"slopeS.exr");
+            savePFM(map, config.outputDir+"slopeS.pfm");
+        }
+        {
+            auto map = negate(slopeAtlas.east);
+            //drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
+            saveEXR(map, config.outputDir+"slopeW.exr");
+            savePFM(map, config.outputDir+"slopeW.pfm");
+        }
+        {
+            auto map = negate(slopeAtlas.northeast);
+            //drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
+            saveEXR(map, config.outputDir+"slopeSW.exr");
+            savePFM(map, config.outputDir+"slopeSW.pfm");
+        }
+        {
+            auto map = negate(slopeAtlas.southeast);
+            //drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
+            saveEXR(map, config.outputDir+"slopeNW.exr");
+            savePFM(map, config.outputDir+"slopeNW.pfm");
+        }
+
+
         {
             auto map = priorityMap;
             drawCircle(map, landingSiteX, landingSiteY, 10, 3.0);
@@ -1393,13 +1440,11 @@ int main(int argc, char* argv[]) {
     {
         std::ofstream file;
         file.open(config.outputDir+"route.xyz");
-        int dz=0;
         for(const auto& p : path.states) {
             Vantage v;
             v.x = elevationMap.j2x(p.j);
             v.y = elevationMap.i2y(p.i);
-            v.z = elevationMap(p.i, p.j) + config.roverHeight + dz;
-            dz++;
+            v.z = elevationMap(p.i, p.j) + config.roverHeight;
             file << fmt::format("{} {} {}\n", v.x, v.y, v.z);
         }
         file.close();
