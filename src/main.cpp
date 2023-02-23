@@ -2,6 +2,7 @@
 #include "terrainmap.h"
 #include "argh.h"
 #include "flat_hash_map.hpp"
+#include "toml.hpp"
 #include "priority_queue.h"
 #include <Eigen/Dense>
 #include <fmt/format.h>
@@ -20,20 +21,17 @@
 #include <chrono>
 
 struct PlannerConfiguration {
-    std::string meshfile   = "../meshes/lmp_crop.ply";
-    std::string outputDir  = "./";
-    double landingSiteX    = 100;       // meters
-    double landingSiteY    = 100;       // meters
-    double landerHeight    = 1.0;       // meters
+    // Basic
+    int numVantages       =   18; // 
+    double mapPitch       =  1.0; // meters
+    std::string outputDir = "./"; //
 
-    double mapPitch             = 1.0;       // meters
-    int    numProbes            = 10000;     // 
-    int    numCandidates        = 10000;     // 
-    int    numVantages          = 15;        // 
-    double visAngle             = 55;        // degrees
-    double maxVisRange          = 300;       // meters
-    double minVantageSeparation = 20.0;      // meters
+    // Lander
+    double landingSiteX = 100; // meters
+    double landingSiteY = 100; // meters
+    double landerHeight = 1.0; // meters
 
+    // Rover
     double roverHeight                 =  1.0; // meters
     double roverSpeed                  = 0.01; // m/s
     double roverFOV                    =   90; // degrees
@@ -41,14 +39,100 @@ struct PlannerConfiguration {
     double roverLongitudinalSlopeLimit = 20.0; // degrees
     double roverPointTurnSlopeLimit    =  5.0; // degrees
 
-    const double distCostMultiplier  =  1.0;
-    const double slopeCostMultiplier = 16.0;
-    const double turnCostMultiplier  =  0.0;
-    const double heuristicMultiplier =  1.0;
+    // Advanced
+    std::string meshFile = "../meshes/lmp_crop.ply"; //
+
+    int    numProbes     = 10000; // 
+    int    numCandidates = 10000; // 
+
+    double maxVisAngle          =   55; // degrees
+    double maxVisRange          =  300; // meters
+    double minVantageSeparation = 20.0; // meters
+
+    double distCostMultiplier  =  1.0; //
+    double slopeCostMultiplier = 16.0; //
+    double turnCostMultiplier  =  0.0; //
+    double heuristicMultiplier =  1.0; //
 };
 
 // Global configuration structure
 PlannerConfiguration config;
+
+void parseConfigFile(const std::string& fileName) {
+    const toml::table tbl = toml::parse_file(fileName);
+    config.numVantages  = tbl["Basic"]["NumVantages"].value_or(config.numVantages);
+    config.mapPitch     = tbl["Basic"]["MapPitch"].value_or(config.mapPitch);
+    config.outputDir    = tbl["Basic"]["OutputDir"].value_or(config.outputDir);
+
+    config.landingSiteX = tbl["Lander"]["LocationXY"][0].value_or(config.landingSiteX);
+    config.landingSiteY = tbl["Lander"]["LocationXY"][1].value_or(config.landingSiteY);
+    config.landerHeight = tbl["Lander"]["Height"].value_or(config.landerHeight);
+
+    config.roverHeight                 = tbl["Rover"]["Height"].value_or(config.roverHeight);
+    config.roverSpeed                  = tbl["Rover"]["Speed"].value_or(config.roverSpeed);
+    config.roverFOV                    = tbl["Rover"]["FOV"].value_or(config.roverFOV);
+    config.roverLateralSlopeLimit      = tbl["Rover"]["LateralSlopeLimit"].value_or(config.roverLateralSlopeLimit);
+    config.roverLongitudinalSlopeLimit = tbl["Rover"]["LongitudinalSlopeLimit"].value_or(config.roverLongitudinalSlopeLimit);
+    config.roverPointTurnSlopeLimit    = tbl["Rover"]["PointTurnSlopeLimit"].value_or(config.roverPointTurnSlopeLimit);
+
+    config.meshFile             = tbl["Advanced"]["MeshFile"].value_or(config.meshFile);
+    config.numProbes            = tbl["Advanced"]["NumProbes"].value_or(config.numProbes);
+    config.numCandidates        = tbl["Advanced"]["NumCandidates"].value_or(config.numCandidates);
+    config.maxVisAngle          = tbl["Advanced"]["MaxVisAngle"].value_or(config.maxVisAngle);
+    config.maxVisRange          = tbl["Advanced"]["MaxVisRange"].value_or(config.maxVisRange);
+    config.minVantageSeparation = tbl["Advanced"]["MinVantageSeparation"].value_or(config.minVantageSeparation);
+
+    config.distCostMultiplier  = tbl["Advanced"]["DistCostMultiplier"].value_or(config.distCostMultiplier);
+    config.slopeCostMultiplier = tbl["Advanced"]["SlopeCostMultiplier"].value_or(config.slopeCostMultiplier);
+    config.turnCostMultiplier  = tbl["Advanced"]["TurnCostMultiplier"].value_or(config.turnCostMultiplier);
+    config.heuristicMultiplier = tbl["Advanced"]["HeuristicMultiplier"].value_or(config.heuristicMultiplier);
+}
+
+void parseCommandLine(int argc, char* argv[]) {
+    argh::parser cmdl(argc, argv);
+
+    if( cmdl[{ "-h", "--help" }] ) {
+        fmt::print("usage: planranger config.toml\n");
+        return;
+    }
+
+    // If the first positional argument is a toml file, use it to configure the planner.
+    if( !cmdl[1].empty() && cmdl[1].find(".toml") != std::string::npos ) {
+        parseConfigFile(cmdl[1]);
+    }
+
+    // Basic
+    cmdl({"NumVantages",      "nv"}, config.numVantages)                 >> config.numVantages;
+    cmdl({"MapPitch",          "p"}, config.mapPitch)                    >> config.mapPitch;
+    cmdl({"OutputDir",         "o"}, config.outputDir)                   >> config.outputDir;
+
+    // Lander
+    cmdl({"LandingSiteX",      "x"}, config.landingSiteX)                >> config.landingSiteX;
+    cmdl({"LandingSiteY",      "y"}, config.landingSiteY)                >> config.landingSiteY;
+    cmdl({"LanderHeight",     "lh"}, config.landerHeight)                >> config.landerHeight;
+
+    // Rover
+    cmdl({"RoverHeight",      "rh"}, config.roverHeight)                 >> config.roverHeight;
+    cmdl({"RoverSpeed",       "rs"}, config.roverSpeed)                  >> config.roverSpeed;
+    cmdl({"RoverFOV",        "fov"}, config.roverFOV)                    >> config.roverFOV;
+
+    cmdl({"LateralSlopeLimit",       "lat"}, config.roverLateralSlopeLimit)      >> config.roverLateralSlopeLimit;
+    cmdl({"LongitudinalSlopeLimit",  "lon"}, config.roverLongitudinalSlopeLimit) >> config.roverLongitudinalSlopeLimit;
+    cmdl({"PointTurnSlopeLimit",    "turn"}, config.roverPointTurnSlopeLimit)    >> config.roverPointTurnSlopeLimit;
+
+    // Advanced
+    cmdl({"MeshFile",               "mesh"}, config.meshFile)             >> config.meshFile;
+    cmdl({"NumProbes",                "np"}, config.numProbes)            >> config.numProbes;
+    cmdl({"NumCandidates",            "nc"}, config.numCandidates)        >> config.numCandidates;
+    cmdl({"MaxVisAngle",              "va"}, config.maxVisAngle)          >> config.maxVisAngle;
+    cmdl({"MaxVisRange",              "vr"}, config.maxVisRange)          >> config.maxVisRange;
+    cmdl({"MinVantageSeparation", "minsep"}, config.minVantageSeparation) >> config.minVantageSeparation;
+
+    cmdl({"DistCostMultiplier",       "dmult"}, config.distCostMultiplier)  >> config.distCostMultiplier;
+    cmdl({"SlopeCostMultiplier",      "smult"}, config.slopeCostMultiplier) >> config.slopeCostMultiplier;
+    cmdl({"TurnCostMultiplier",       "tmult"}, config.turnCostMultiplier)  >> config.turnCostMultiplier;
+    cmdl({"HeuristicMultiplier",      "hmult"}, config.heuristicMultiplier) >> config.heuristicMultiplier;
+}
 
 enum class Direction : int8_t { N = 0, NE, E, SE, S, SW, W, NW };
 
@@ -62,44 +146,6 @@ std::string directionToString(const Direction& d) {
     return dir2name[(int)d];
 }
 
-
-void parseCommandLine(int argc, char* argv[]) {
-    argh::parser cmdl(argc, argv);
-
-    if( cmdl[{ "-h", "--help" }] ) {
-        fmt::print("usage: planranger [-p][-x][-y][-rs][-rh][-lh] meshfile outdir\n");
-        fmt::print("\tmeshfile: a .ply format map of terrain surrounding a lunar pit.\n");
-        fmt::print("\toutdir: a directory in which to place the output.\n");
-        fmt::print("\tp: the grid spacing (in meters) to use for generated maps.\n");
-        fmt::print("\tx: the x-coordinate of the landing site.\n");
-        fmt::print("\ty: the y-coordinate of the landing site.\n");
-        fmt::print("\trs: the rover's max slope capability in degrees.\n");
-        fmt::print("\trh: the height of the rover antenna.\n");
-        fmt::print("\tlh: the height of the lander antenna.\n");
-        fmt::print("\tnp: the number of visibility probes.\n");
-        fmt::print("\tnc: the number of candidate vantages to evaluate.\n");
-        fmt::print("\tnv: the number of vantages to select from the candidates.\n");
-        fmt::print("\tva: the visibility angle [deg] beyond which a view is not counted.\n");
-        return;
-    }
-
-    cmdl(1, config.meshfile) >> config.meshfile;
-    cmdl(2, config.outputDir) >> config.outputDir;
-    config.outputDir = config.outputDir + "/";
-
-    cmdl("p", config.mapPitch) >> config.mapPitch;
-    cmdl("x", config.landingSiteX) >> config.landingSiteX;
-    cmdl("y", config.landingSiteY) >> config.landingSiteY;
-    cmdl("lonslope", config.roverLongitudinalSlopeLimit) >> config.roverLongitudinalSlopeLimit;
-    cmdl("latslope", config.roverLateralSlopeLimit) >> config.roverLateralSlopeLimit;
-    cmdl("turnslope", config.roverPointTurnSlopeLimit) >> config.roverPointTurnSlopeLimit;
-    cmdl("rh", config.roverHeight) >> config.roverHeight;
-    cmdl("lh", config.landerHeight) >> config.landerHeight;
-    cmdl("np", config.numProbes) >> config.numProbes;
-    cmdl("nc", config.numCandidates) >> config.numCandidates;
-    cmdl("nv", config.numVantages) >> config.numVantages;
-    cmdl("va", config.visAngle) >> config.visAngle;
-}
 
 struct SlopeAtlas {
     TerrainMapFloat absolute;
@@ -623,7 +669,7 @@ generateVantageCandidates(const TerrainMesh& tmesh,
                 double hitDist = std::sqrt((ray.oX-hit->x)*(ray.oX-hit->x) +
                                            (ray.oY-hit->y)*(ray.oY-hit->y) +
                                            (ray.oZ-hit->z)*(ray.oZ-hit->z));
-                if( hitAngle < config.visAngle && hitDist < config.maxVisRange && std::abs(rayNorm-hitDist) < 0.05*rayNorm ) {
+                if( hitAngle < config.maxVisAngle && hitDist < config.maxVisRange && std::abs(rayNorm-hitDist) < 0.05*rayNorm ) {
                     candidate.coverage[pi] = true;
                     candidate.totalCoverage += p.priority;
                 }
@@ -759,7 +805,7 @@ TerrainMapFloat buildCoverageMap(const TerrainMesh& tmesh,
                     double hitDist = std::sqrt((ray.oX-hit->x)*(ray.oX-hit->x) +
                                                (ray.oY-hit->y)*(ray.oY-hit->y) +
                                                (ray.oZ-hit->z)*(ray.oZ-hit->z));
-                    if( hitAngle < config.visAngle && hitDist < config.maxVisRange && std::abs(rayNorm-hitDist) < rayNorm*0.05 ) { 
+                    if( hitAngle < config.maxVisAngle && hitDist < config.maxVisRange && std::abs(rayNorm-hitDist) < rayNorm*0.05 ) { 
                         coverageMap(ri, rj)++;
                     }
                 } 
@@ -987,10 +1033,6 @@ std::vector<int> routeplan(const Eigen::MatrixXd& costs) {
         augCosts(SITES, endpoint) = 0.0;
         augCosts(endpoint, SITES) = 0.0;
 
-        fmt::print("AUGMENTED COSTS:\n");
-        fmt::print("{}\n", augCosts);
-        fmt::print("SITES: {}\n", SITES);
-
         auto [route, cost] = solveTSP(augCosts, SITES); 
         if( cost < minCost ) {
             minRoute = route;
@@ -1151,7 +1193,7 @@ std::vector<Vantage> sortCCW(const std::vector<Vantage> vantages, double siteX, 
 }
 
 int main(int argc, char* argv[]) {
-
+    
     // Parse the command line and populate the global config struct.
     parseCommandLine(argc, argv);
 
@@ -1161,7 +1203,7 @@ int main(int argc, char* argv[]) {
     }
 
     // Read the terrain mesh.
-    TerrainMesh tmesh(config.meshfile);
+    TerrainMesh tmesh(config.meshFile);
 
     // Construct elevation, priority, and slope maps.
     auto [elevationMap, priorityMap, slopeAtlas] = buildTerrainMaps(tmesh, config.mapPitch);
@@ -1413,8 +1455,6 @@ int main(int argc, char* argv[]) {
             dists(a,b) = paths[a][b].dist;
         }
     }
-    fmt::print("\nCosts: \n{}\n\n", costs);
-    fmt::print("\nDists: \n{}\n\n", dists);
 
     // Compute exploration route.
     auto route = routeplan(costs);
