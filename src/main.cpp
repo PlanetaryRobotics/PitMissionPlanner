@@ -172,7 +172,7 @@ struct SlopeAtlas {
 
     size_t rows() const { return absolute.rows; }
     size_t cols() const { return absolute.cols; }
-    size_t pitch() const { return absolute.pitch; }
+    double pitch() const { return absolute.pitch; }
 };
 
 struct Path {
@@ -1458,6 +1458,8 @@ int main(int argc, char* argv[]) {
             dists(a,b) = paths[a][b].dist;
         }
     }
+    fmt::print("Costs:\n{}\n\n", costs);
+    fmt::print("Dists:\n{}\n\n", dists);
 
     // Compute exploration route.
     auto route = routeplan(costs);
