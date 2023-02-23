@@ -189,8 +189,8 @@ struct Path {
 
     std::vector<State> states;
 
-    double cost = -1.0;
-    double dist = -1.0;
+    double cost = 0.0;
+    double dist = 0.0;
 };
 
 namespace std {
