@@ -239,6 +239,8 @@ Direction directionFromTo(const Path::State& from, const Path::State& to) {
 };
 
 Path append(const Path& a, const Path& b) {
+    assert(a.cost >= 0); assert(a.dist >= 0);
+    assert(b.cost >= 0); assert(b.dist >= 0);
     Path c;
     c.cost = a.cost + b.cost;
     c.dist = a.dist + b.dist;
@@ -268,7 +270,6 @@ bool checkMapBit(const TerrainMapU8& map, const Path::State& state) {
 void setMapBit(TerrainMapU8& map, const Path::State& state) {
     map(state.i, state.j) = setBit(map(state.i, state.j), (int)state.d);
 };
-
 
 std::tuple<TerrainMapFloat,TerrainMapFloat,SlopeAtlas>
 buildTerrainMaps(const TerrainMesh& tmesh, const double mapPitch) {
@@ -1171,6 +1172,8 @@ Path assembleRoute(const std::vector<int>& route,
                    const std::vector<std::vector<Path>> paths) {
     // Walk the route, lookup each path segment, and glue them all together.
     Path finalPath;
+    finalPath.cost = 0;
+    finalPath.dist = 0;
     for(int i=0; i<route.size()-1; ++i) {
         const Path& path = paths[route[i]][route[i+1]];
         finalPath = append(finalPath, path);
