@@ -973,7 +973,7 @@ std::pair<std::vector<int>,int64_t> solveTSP(const Eigen::MatrixXd& costs, int d
     for(int i=0; i<costs.rows(); ++i) {
         data.distance_matrix[i].resize(costs.cols());
         for(int j=0; j<costs.cols(); ++j) {
-            data.distance_matrix[i][j] = static_cast<int64_t>(1000*costs(i,j));
+            data.distance_matrix[i][j] = static_cast<int64_t>(costs(i,j));
             if( i == j) {
                 data.distance_matrix[i][j] = 0;
             }
@@ -1015,7 +1015,12 @@ std::pair<std::vector<int>,int64_t> solveTSP(const Eigen::MatrixXd& costs, int d
 
 std::vector<int> routeplan(const Eigen::MatrixXd& costs) {
     int SITES = costs.rows();
-    double INF = 1e12;
+
+    // NOTE(Jordan):
+    // For some reason, or-tools doesn't like it when you use int64_t::max()
+    // as a cost in the traveling salesman cost matrix.
+    // Dividing by 1024 makes it work without overflowing.
+    int64_t INF = std::numeric_limits<int64_t>::max() / 1024;
 
     std::vector<int> minRoute;
     int64_t minCost = INF;
@@ -1039,10 +1044,9 @@ std::vector<int> routeplan(const Eigen::MatrixXd& costs) {
             minRoute = route;
             minCost = cost;
         }
-
-        fmt::print("COST {} ROUTE:\n", cost);
-        for(const auto& x : route) { fmt::print("{} ", x); }
-        fmt::print("\n");
+        // fmt::print("COST {} ROUTE: ", cost);
+        // for(const auto& x : route) { fmt::print("{} ", x); }
+        // fmt::print("\n");
     }
 
     // Remove the imaginary depot city from the beginning of the route.
@@ -1458,8 +1462,8 @@ int main(int argc, char* argv[]) {
             dists(a,b) = paths[a][b].dist;
         }
     }
-    fmt::print("Costs:\n{}\n\n", costs);
-    fmt::print("Dists:\n{}\n\n", dists);
+    // fmt::print("Costs:\n{}\n", costs);
+    // fmt::print("Dists:\n{}\n", dists);
 
     // Compute exploration route.
     auto route = routeplan(costs);
@@ -1470,8 +1474,8 @@ int main(int argc, char* argv[]) {
 
     // Chain paths together to create the final path.
     Path path = assembleRoute(route, paths);
-    fmt::print("Final Path Cost: {}\n", path.cost);
-    fmt::print("Final Path Dist: {}\n", path.dist);
+    fmt::print("Final Cost: {:.3f}\n", path.cost);
+    fmt::print("Final Dist: {:.3f}\n", path.dist);
 
     // Draw the final route!
     TerrainMapFloat routeMap = vantageMap;
