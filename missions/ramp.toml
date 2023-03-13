@@ -1,0 +1,29 @@
+[Basic]
+NumVantages = 15
+MapPitch    = 1.0
+OutputDir   = "./"
+
+[Lander]
+LocationXY = [120, 100]
+Height = 3.0
+
+[Rover]
+Height                 = 1.0
+Speed                  = 1.0
+FOV                    = 90
+LateralSlopeLimit      = 10
+LongitudinalSlopeLimit = 20
+PointTurnSlopeLimit    = 10
+
+[Advanced]
+MeshFile = "../meshes/lmp-ramp.ply"
+NumProbes            = 10000
+NumCandidates        = 10000
+MaxVisAngle          = 55
+MaxVisRange          = 300
+MinVantageSeparation = 15.0
+
+DistCostMultiplier  =  1.0
+SlopeCostMultiplier = 16.0
+TurnCostMultiplier  =  0.0
+HeuristicMultiplier =  1.0

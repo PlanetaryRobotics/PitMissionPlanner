@@ -7,6 +7,7 @@
 #include <Eigen/Dense>
 #include <fmt/format.h>
 #include <fmt/ostream.h>
+#include <array>
 #include <optional>
 #include <unordered_set>
 #include <iostream>
@@ -40,7 +41,7 @@ struct PlannerConfiguration {
     double roverPointTurnSlopeLimit    =  5.0; // degrees
 
     // Advanced
-    std::string meshFile = "../meshes/lmp_crop.ply"; //
+    std::string meshFile = "../meshes/lmp-interior.ply"; //
 
     int    numProbes     = 10000; // 
     int    numCandidates = 10000; // 
@@ -49,6 +50,8 @@ struct PlannerConfiguration {
     double maxVisRange          =  300; // meters
     double minVantageSeparation = 20.0; // meters
 
+    std::array<double, 10> visMultipliers = {1.0, 1.0, 0.8, 0.5, 0.2, 0.1, 0.1, 0.1, 0.1, 0.1}; //
+ 
     double distCostMultiplier  =  1.0; //
     double slopeCostMultiplier = 16.0; //
     double turnCostMultiplier  =  0.0; //
@@ -91,9 +94,49 @@ void parseConfigFile(const std::string& fileName) {
 void parseCommandLine(int argc, char* argv[]) {
     argh::parser cmdl(argc, argv);
 
-    if( cmdl[{ "-h", "--help" }] ) {
-        fmt::print("usage: planranger config.toml\n");
-        return;
+    if( cmdl[{ "-h", "--help", "--Help" }] ) {
+        fmt::print("usage: planranger [options] [config.toml]\n");
+        fmt::print("  options:\n");
+        fmt::print("    [Basic]\n");
+        fmt::print("      -h,   --Help                    Show this help message.\n");
+        fmt::print("      -nv,  --NumVantages             The number of vantages to include in the route.\n");
+        fmt::print("      -p,   --MapPitch                The resolution (meters) to use for generating maps.\n");
+        fmt::print("      -o,   --OutputDir               A directory to store the planner output.\n");
+        fmt::print("\n");
+
+        fmt::print("    [Lander]\n");
+        fmt::print("      -x,   --LandingSiteX            The x-coordinate of the landing site.\n");
+        fmt::print("      -y,   --LandingSiteY            The y-coordinate of the landing site.\n");
+        fmt::print("      -lh,  --LanderHeight            The height of the comms antenna on the lander.\n");
+        fmt::print("\n");
+
+        fmt::print("    [Rover]\n");
+        fmt::print("      -rh,   --RoverHeight            The height of the comms antenna on the rover.\n");
+        fmt::print("      -rs,   --RoverSpeed             The rover's driving speed in m/s .\n");
+        fmt::print("      -fov,  --RoverFOV               The rover camera's field-of-view in degrees.\n");
+        fmt::print("\n");
+
+        fmt::print("      -lat,  --LateralSlopeLimit      The rover's max lateral slope in degrees.\n");
+        fmt::print("      -lon,  --LongitudinalSlopeLimit The rover's max longitudinal slope in degrees.\n");
+        fmt::print("      -turn, --PointTurnSlopeLimit    The steepest slope (in degrees) on which the rover can turn.\n");
+        fmt::print("\n");
+
+        fmt::print("    [Advanced]\n");
+        fmt::print("      -mesh,   --MeshFile             A *.ply file representing the terrain.\n");
+        fmt::print("      -np,     --NumProbes            The number of visibility probes to use for vantage selection.\n");
+        fmt::print("      -nc,     --NumCandidates        The number of vantage candidates to consider for vantage selection.\n");
+        fmt::print("      -va,     --MaxVisAngle          The maximum incidence angle (in degrees) that is considered a valid view hit.\n");
+        fmt::print("      -vr,     --MaxVisRange          The maximum distance (in meters) beyond which a view hit is not counted.\n");
+        fmt::print("      -minsep, --MinVantageSeparation The minimum distance between any two vantages.\n");
+        fmt::print("\n");
+
+        fmt::print("      -dmult,  --DistCostMultiplier   The unitless multiplier used to weight the distance cost term in the planning cost function.\n");
+        fmt::print("      -smult,  --SlopeCostMultiplier  The unitless multiplier used to weight the slope cost term in the planning cost function.\n");
+        fmt::print("      -tmult,  --TurnCostMultiplier   The unitless multiplier used to weight the turning cost term in the planning cost function.\n");
+        fmt::print("      -hmult,  --HeuristicMultiplier  The unitless multiplier used to inflate the A* heuristic for faster, less-optimal planning.\n");
+        fmt::print("\n");
+
+        exit(0);
     }
 
     // If the first positional argument is a toml file, use it to configure the planner.
@@ -716,14 +759,8 @@ std::vector<Vantage> selectVantages(const std::vector<Vantage>& candidates,
 
             for(int pi=0; pi<probes.size(); ++pi) {
                 if( !c.coverage[pi] ) { continue; }
-
-                if( visCounters[pi] == 0 ) {
-                    scores[ci] += 1.0 * probes[pi].priority;
-                } else if( visCounters[pi] == 1 ) {
-                    scores[ci] += 0.8 * probes[pi].priority;
-                } else if( visCounters[pi] == 2 ) {
-                    scores[ci] += 0.05 * probes[pi].priority;
-                }
+                    int visCount = std::clamp<int>(visCounters[pi], 0, 10);
+                    scores[ci] += config.visMultipliers[visCount] * probes[pi].priority;
             }
         }
 
