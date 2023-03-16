@@ -73,6 +73,66 @@ void drawCircle(TerrainMap<T>& map, double x, double y, double val, double rad) 
     }
 }
 
+//x and y are center of rectangle
+template<typename T>
+void drawTriangle(TerrainMap<T>& map, double X, double Y, int d, double val, double width = 2, double height = 4) {
+    int cj = map.x2j(X);
+    int ci = map.y2i(Y);
+
+    int W = std::ceil(width  / map.pitch);
+    int H = std::ceil(height / map.pitch);
+
+    double top[2] = {ci-H/2.0, (double)cj};
+    double  bl[2] = {ci+H/2.0, cj-W/2.0};
+    double  br[2] = {ci+H/2.0, cj+W/2.0};
+
+    auto rotCW = [ci, cj](double i, double j, double deg) {
+        double di = i-ci;
+        double dj = j-cj;
+        double c = std::cos(deg * M_PI/180.0);
+        double s = std::sin(deg * M_PI/180.0);
+        double ri =  c*di + s*dj + ci;
+        double rj = -s*di + c*dj + cj;
+        return std::make_pair(ri, rj);
+    };
+    auto det2d = [](double ai, double aj, double bi, double bj) {
+        return ai*bj - aj*bi;
+    };
+
+    // Rotate the triangle vertices by the appropriate angle.
+    std::tie(top[0], top[1]) = rotCW(top[0], top[1], 45*d);
+    std::tie(bl[0], bl[1])   = rotCW( bl[0],  bl[1], 45*d);
+    std::tie(br[0], br[1])   = rotCW( br[0],  br[1], 45*d);
+
+    // Compute the bounding box of the rotated triangle.
+    int minI = std::min(std::min(top[0], bl[0]), br[0]);
+    int maxI = std::max(std::max(top[0], bl[0]), br[0]);
+    int minJ = std::min(std::min(top[1], bl[1]), br[1]);
+    int maxJ = std::max(std::max(top[1], bl[1]), br[1]);
+
+    // Loop over the bounding box of the rotated triangle.
+    for(int i=minI; i<=maxI; ++i) {
+        for(int j=minJ; j<=maxJ; ++j) {
+            // If this point is outside the map, skip it.
+            if( i < 0 || i >= map.rows ) { continue; }
+            if( j < 0 || j >= map.cols ) { continue; }
+
+            // Compute the barycentric coordinates of this point.
+            double area  = W*H;
+            double beta  = det2d(j-top[1], i-top[0],  top[1]-br[1], top[0]-br[0]) / area;
+            double gamma = det2d(j-top[1], i-top[0],  bl[1]-top[1], bl[0]-top[0]) / area;
+            double alpha = 1.0 - beta - gamma;
+
+            const double eps = 1e-4;
+            if( 0.0 - eps <= alpha && alpha <= 1.0 + eps &&
+                0.0 - eps <= beta  && beta  <= 1.0 + eps &&
+                0.0 - eps <= gamma && gamma <= 1.0 + eps ) {
+                map(i,j) = static_cast<T>(val);
+            }
+        }
+    }
+}
+
 template <typename T>
 void saveEXR(const TerrainMap<T>& map, const std::string& filename) {
     const char *err;

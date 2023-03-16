@@ -16,7 +16,7 @@ LongitudinalSlopeLimit = 20
 PointTurnSlopeLimit    = 10
 
 [Advanced]
-MeshFile = "../meshes/lmp.ply"
+MeshFile = "../meshes/lmp-interior.ply"
 NumProbes            = 10000
 NumCandidates        = 10000
 MaxVisAngle          = 55

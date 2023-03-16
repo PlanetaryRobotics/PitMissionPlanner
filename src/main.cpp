@@ -1099,6 +1099,44 @@ std::vector<int> routeplan(const Eigen::MatrixXd& costs) {
 
     return minRoute;
 }
+std::vector<std::vector<Path>> planAllPairsSLOW(const std::vector<Path::State>& sites,
+                                                const SlopeAtlas& slopeAtlas,
+                                                const TerrainMapFloat& commsMap) {
+    std::vector<std::vector<Path>> allPaths;
+    allPaths.resize(sites.size());
+    for(auto& pathList : allPaths) { pathList.resize(sites.size()); }
+
+    // Generate all combinations of two indices into the allSites vector.
+    #pragma omp parallel for
+    for(int a=0; a<sites.size()-1; ++a) {
+        const Path::State start = sites[a];
+
+        for(int b=a+1; b<sites.size(); ++b) {
+            std::vector<Path::State> goals;
+            goals.push_back(sites[b]);
+            auto paths = multipathplan(slopeAtlas, commsMap, start, goals, a);
+
+            for( const auto& path : paths ) {
+                if( path.states.size() == 0 ) { continue; }
+                const auto& start = path.states[0];
+                const auto& goal = path.states[path.states.size()-1];
+
+                // We forgot which (a,b) pair this goal came from.
+                // We have to find this goal in the goals list so we know where
+                // to record things in the costs and dists matrices.
+                {
+                    const auto it = std::find(goals.begin(), goals.end(), goal);
+                    assert( it != goals.cend() );
+                    b += std::distance(goals.begin(), it);
+                }
+                allPaths[a][b] = path;
+                allPaths[b][a] = reverse(path);
+            }
+        }
+
+    }
+    return allPaths;
+}
 
 std::vector<std::vector<Path>> planAllPairs(const std::vector<Path::State>& sites,
                                             const SlopeAtlas& slopeAtlas,
@@ -1331,7 +1369,8 @@ int main(int argc, char* argv[]) {
         }
         {
             auto map = slopeAtlas.absolute;
-            //drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
+            drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
+            drawTriangle(map, landingSiteX, landingSiteY, 0, 100, 5, 10);
             saveEXR(map, config.outputDir+"slope.exr");
             savePFM(map, config.outputDir+"slope.pfm");
         }
@@ -1399,6 +1438,7 @@ int main(int argc, char* argv[]) {
             auto map = priorityMap;
             drawCircle(map, landingSiteX, landingSiteY, 10, 3.0);
             saveEXR(map, config.outputDir+"priority.exr");
+            savePFM(map, config.outputDir+"priority.pfm");
         }
         {
             auto map = commsMap;
@@ -1488,7 +1528,13 @@ int main(int argc, char* argv[]) {
     }
 
     // Compute paths between all pairs of k vantages plus the landing site.
-    const auto paths = planAllPairs(allSites, slopeAtlas, commsMap);
+    auto tstart = std::chrono::high_resolution_clock::now();
+    const auto paths = planAllPairsSLOW(allSites, slopeAtlas, commsMap);
+    auto tmid = std::chrono::high_resolution_clock::now();
+    const auto paths2 = planAllPairs(allSites, slopeAtlas, commsMap);
+    auto tstop = std::chrono::high_resolution_clock::now();
+    fmt::print("SLOW: {} sec\n", std::chrono::duration_cast<std::chrono::milliseconds>(tmid-tstart).count()/1000.0);
+    fmt::print("FAST: {} sec\n", std::chrono::duration_cast<std::chrono::milliseconds>(tstop-tmid).count()/1000.0);
 
     // Organize path costs into convenient matrices for route planning.
     Eigen::MatrixXd costs(allSites.size(), allSites.size()); costs.fill(-1);
