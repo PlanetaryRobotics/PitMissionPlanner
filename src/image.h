@@ -55,18 +55,23 @@ class ImageRGB {
         std::vector<uint8_t> _data;
 };
 
-void drawCircle(ImageRGB& image, int ci, int cj, double R, const tinycolormap::Color& color) {
+void drawCircle(ImageRGB& image, int ci, int cj, double r, double R, const tinycolormap::Color& color) {
     for(int i=ci-R; i<=ci+R; ++i) {
         for(int j=cj-R; j<=cj+R; ++j) {
             if( i < 0 || i > image.rows() ) { continue; }
             if( j < 0 || j > image.cols() ) { continue; }
-            if( (i-ci)*(i-ci)+(j-cj)*(j-cj) < R*R ) {
+            double d2 = (i-ci)*(i-ci) + (j-cj)*(j-cj);
+            if( r*r <= d2 && d2 <= R*R ) {
                 image(i,j,0) = color.ri();
                 image(i,j,1) = color.gi();
                 image(i,j,2) = color.bi();
             }
         }
     }
+}
+
+void drawCircle(ImageRGB& image, int ci, int cj, double R, const tinycolormap::Color& color) {
+    drawCircle(image, ci, cj, R, 0, color);
 }
 
 void drawTriangle(ImageRGB& image, int ci, int cj, double deg, const tinycolormap::Color& color, double W = 2, double H = 4) {

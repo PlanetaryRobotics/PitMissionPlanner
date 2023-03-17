@@ -1606,15 +1606,17 @@ int main(int argc, char* argv[]) {
     // Animate the final path.
     {
         int upsample = 4;
-        ImageRGB baseImg(slopeAtlas.absolute, cm::ColormapType::Viridis, upsample);
+        ImageRGB baseImg(slopeAtlas.absolute, cm::ColormapType::Plasma, upsample);
 
         #pragma omp parallel for
         for(int f=0; f<path.states.size(); ++f) {
+            fmt::print("Animating frame {}...\n", f);
             const auto& s = path.states[f];
             ImageRGB img = baseImg;
 
             // Draw the landing site.
-            drawCircle(img, landingSiteI*upsample, landingSiteJ*upsample, 25, cm::Color(0.0, 0.0, 1.0));
+            double r = upsample * 50.0/slopeAtlas.pitch();
+            drawCircle(img, landingSiteI*upsample, landingSiteJ*upsample, r, r+4, cm::Color(1.0, 1.0, 1.0));
 
             // Draw a trail behind the rover.
             for(int ff=0; ff<f; ++ff) {
