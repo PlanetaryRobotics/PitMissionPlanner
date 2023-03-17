@@ -1,3 +1,4 @@
+#include "image.h"
 #include "terrainmesh.h"
 #include "terrainmap.h"
 #include "argh.h"
@@ -1275,6 +1276,7 @@ std::vector<Vantage> sortCCW(const std::vector<Vantage> vantages, double siteX, 
 }
 
 int main(int argc, char* argv[]) {
+    namespace cm = tinycolormap;
     
     // Parse the command line and populate the global config struct.
     parseCommandLine(argc, argv);
@@ -1595,6 +1597,19 @@ int main(int argc, char* argv[]) {
             file << fmt::format("{},{},{},{},{},{}\n", v.x, v.y, v.z, p.i, p.j, (int)p.d);
         }
         file.close();
+    }
+
+    {
+        ImageRGB baseImg(slopeAtlas.absolute, cm::ColormapType::Viridis, 4);
+        #pragma omp parallel for
+        for(int f=0; f<path.states.size(); ++f) {
+            const auto& s = path.states[f];
+            ImageRGB img = baseImg;
+
+            drawCircle(  img, landingSiteI*4, landingSiteJ*4, 25, cm::Color(0.0, 0.0, 1.0));
+            drawTriangle(img, s.i*4, s.j*4, (int)s.d, cm::Color(1.0, 0.0, 0.0), 30, 40);
+            savePNG(img, fmt::format("anim_{:05}.png", f));
+        }
     }
 
     return 0;

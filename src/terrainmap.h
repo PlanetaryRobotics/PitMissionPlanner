@@ -38,6 +38,25 @@ public:
         return operator()(i,j);
     }
 
+    const T min() const {
+        T minVal = std::numeric_limits<T>::max();
+        for(int i=0; i<rows; ++i) {
+            for(int j=0; j<cols; ++j) {
+                if( atIJ(i,j) < minVal ) { minVal = atIJ(i,j); }
+            }
+        }
+        return minVal;
+    }
+    const T max() const {
+        T maxVal = -std::numeric_limits<T>::max();
+        for(int i=0; i<rows; ++i) {
+            for(int j=0; j<cols; ++j) {
+                if( atIJ(i,j) > maxVal ) { maxVal = atIJ(i,j); }
+            }
+        }
+        return maxVal;
+    }
+
     double j2x(size_t j) const { return (j+0.5)*pitch; }
     double i2y(size_t i) const { return (rows-i-0.5)*pitch; }
 
