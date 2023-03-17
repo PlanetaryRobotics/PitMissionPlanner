@@ -25,5 +25,5 @@ MinVantageSeparation = 20.0
 
 DistCostMultiplier  =  1.0
 SlopeCostMultiplier = 16.0
-TurnCostMultiplier  =  0.0
+TurnCostMultiplier  =  1.0
 HeuristicMultiplier =  1.0

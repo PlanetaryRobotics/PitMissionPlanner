@@ -55,7 +55,7 @@ struct PlannerConfiguration {
  
     double distCostMultiplier  =  1.0; //
     double slopeCostMultiplier = 16.0; //
-    double turnCostMultiplier  =  0.0; //
+    double turnCostMultiplier  =  1.0; //
     double heuristicMultiplier =  1.0; //
 };
 
@@ -468,11 +468,11 @@ std::vector<Path::State> getSuccessors(const Path::State& p, const SlopeAtlas& s
 
     // You can only point turn if the terrain is flat enough.
     if( slopeAtlas.absolute(p.i, p.j) <= config.roverPointTurnSlopeLimit ) {
-        for(int dd=0; dd<8; ++dd) {
+        for(int dd=-1; dd<=1; ++dd) {
             Path::State s;
             s.i=p.i;
             s.j=p.j;
-            s.d=static_cast<Direction>((static_cast<int>(p.d)+dd)%8);
+            s.d=static_cast<Direction>((static_cast<int>(p.d)+dd+8)%8);
             if( s.d != p.d ) {
                 succs.push_back(s);
             }
@@ -904,9 +904,13 @@ std::vector<Path> multipathplan(const SlopeAtlas& slopeAtlas,
         const double slope = slopeAtlas.absolute(b.i, b.j);
         const double dist = slopeAtlas.pitch() * octileDistance(a, b);
         const double turn = 0.25 * std::abs(std::abs(static_cast<int>(b.d)-static_cast<int>(a.d))-4);
+
+        // Slightly penalize driving backward.
+        double back = ( dist > 0.0 && directionFromTo(a,b) != a.d ) ? 1.0 : 0.0;
+
         return config.slopeCostMultiplier * (slope/90.0) +
                config.distCostMultiplier * dist +
-               config.turnCostMultiplier * turn;
+               config.turnCostMultiplier * (turn + back);
     };
 
     // Initialize the search.
@@ -1531,9 +1535,9 @@ int main(int argc, char* argv[]) {
 
     // Compute paths between all pairs of k vantages plus the landing site.
     auto tstart = std::chrono::high_resolution_clock::now();
-    const auto paths = planAllPairsSLOW(allSites, slopeAtlas, commsMap);
+    //const auto paths2 = planAllPairsSLOW(allSites, slopeAtlas, commsMap);
     auto tmid = std::chrono::high_resolution_clock::now();
-    const auto paths2 = planAllPairs(allSites, slopeAtlas, commsMap);
+    const auto paths = planAllPairs(allSites, slopeAtlas, commsMap);
     auto tstop = std::chrono::high_resolution_clock::now();
     fmt::print("SLOW: {} sec\n", std::chrono::duration_cast<std::chrono::milliseconds>(tmid-tstart).count()/1000.0);
     fmt::print("FAST: {} sec\n", std::chrono::duration_cast<std::chrono::milliseconds>(tstop-tmid).count()/1000.0);
@@ -1599,15 +1603,29 @@ int main(int argc, char* argv[]) {
         file.close();
     }
 
+    // Animate the final path.
     {
-        ImageRGB baseImg(slopeAtlas.absolute, cm::ColormapType::Viridis, 4);
+        int upsample = 4;
+        ImageRGB baseImg(slopeAtlas.absolute, cm::ColormapType::Viridis, upsample);
+
         #pragma omp parallel for
         for(int f=0; f<path.states.size(); ++f) {
             const auto& s = path.states[f];
             ImageRGB img = baseImg;
 
-            drawCircle(  img, landingSiteI*4, landingSiteJ*4, 25, cm::Color(0.0, 0.0, 1.0));
-            drawTriangle(img, s.i*4, s.j*4, (int)s.d, cm::Color(1.0, 0.0, 0.0), 30, 40);
+            // Draw the landing site.
+            drawCircle(img, landingSiteI*upsample, landingSiteJ*upsample, 25, cm::Color(0.0, 0.0, 1.0));
+
+            // Draw a trail behind the rover.
+            for(int ff=0; ff<f; ++ff) {
+                const auto& s0 = path.states[ff];
+                const auto& s1 = path.states[ff+1];
+                drawLine(img, s0.i*upsample,s0.j*upsample, s1.i*upsample,s1.j*upsample, cm::Color(1.0, 1.0, 1.0), 1.0*upsample);
+            }
+
+            // Draw the rover.
+            drawTriangle(img, s.i*upsample, s.j*upsample, (int)s.d*45, cm::Color(1.0, 0.0, 0.0), 5*upsample, 8*upsample);
+                
             savePNG(img, fmt::format("anim_{:05}.png", f));
         }
     }

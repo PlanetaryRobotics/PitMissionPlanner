@@ -69,7 +69,7 @@ void drawCircle(ImageRGB& image, int ci, int cj, double R, const tinycolormap::C
     }
 }
 
-void drawTriangle(ImageRGB& image, int ci, int cj, int d, const tinycolormap::Color& color, double W = 2, double H = 4) {
+void drawTriangle(ImageRGB& image, int ci, int cj, double deg, const tinycolormap::Color& color, double W = 2, double H = 4) {
     double top[2] = {ci-H/2.0, (double)cj};
     double  bl[2] = {ci+H/2.0, cj-W/2.0};
     double  br[2] = {ci+H/2.0, cj+W/2.0};
@@ -88,9 +88,9 @@ void drawTriangle(ImageRGB& image, int ci, int cj, int d, const tinycolormap::Co
     };
 
     // Rotate the triangle vertices by the appropriate angle.
-    std::tie(top[0], top[1]) = rotCW(top[0], top[1], 45*d);
-    std::tie(bl[0], bl[1])   = rotCW( bl[0],  bl[1], 45*d);
-    std::tie(br[0], br[1])   = rotCW( br[0],  br[1], 45*d);
+    std::tie(top[0], top[1]) = rotCW(top[0], top[1], deg);
+    std::tie( bl[0],  bl[1]) = rotCW( bl[0],  bl[1], deg);
+    std::tie( br[0],  br[1]) = rotCW( br[0],  br[1], deg);
 
     // Compute the bounding box of the rotated triangle.
     int minI = std::min(std::min(top[0], bl[0]), br[0]);
@@ -115,6 +115,48 @@ void drawTriangle(ImageRGB& image, int ci, int cj, int d, const tinycolormap::Co
             if( 0.0 - eps <= alpha && alpha <= 1.0 + eps &&
                 0.0 - eps <= beta  && beta  <= 1.0 + eps &&
                 0.0 - eps <= gamma && gamma <= 1.0 + eps ) {
+                image(i,j, 0) = color.ri();
+                image(i,j, 1) = color.gi();
+                image(i,j, 2) = color.bi();
+            }
+        }
+    }
+}
+
+void drawLine(ImageRGB& image, double ai, double aj, double bi, double bj, const tinycolormap::Color& color, double W=1.0) {
+    // Lazy man's line drawing algorithm...
+    double length = std::sqrt((bi-ai)*(bi-ai) + (bj-aj)*(bj-aj));
+
+    double linevec[2] = {(bi-ai)/length, (bj-aj)/length};
+    double norm[2] = {-linevec[1], linevec[0]};
+
+    double W_2 = W/2.0;
+    double minI = std::min(ai, bi) - W_2;
+    double maxI = std::max(ai, bi) + W_2;
+    double minJ = std::min(aj, bj) - W_2;
+    double maxJ = std::max(aj, bj) + W_2;
+
+    auto dist_point_to_line = [](double  i, double  j,
+                                 double ai, double aj,
+                                 double bi, double bj) {
+        double l2 = (bi-ai)*(bi-ai) + (bj-aj)*(bj-aj);
+        if( l2 == 0.0 ) { return std::sqrt((i-ai)*(i-ai)+(j-bj)*(j-bj)); }
+
+        double dot = (i-ai)*(bi-ai) + (j-aj)*(bj-aj);
+        double t = std::clamp(dot/l2, 0.0, 1.0);
+        double proj_i = ai + t*(bi-ai);
+        double proj_j = aj + t*(bj-aj);
+        return std::sqrt((i-proj_i)*(i-proj_i)+(j-proj_j)*(j-proj_j));
+    };
+
+    for(int i=minI; i<=maxI; ++i) {
+        for(int j=minJ; j<=maxJ; ++j) {
+            // If this point is outside the image, skip it.
+            if( i < 0 || i >= image.rows() ) { continue; }
+            if( j < 0 || j >= image.cols() ) { continue; }
+
+            double d2l = dist_point_to_line(i,j, ai,aj, bi,bj); 
+            if( d2l <= W_2 ) {
                 image(i,j, 0) = color.ri();
                 image(i,j, 1) = color.gi();
                 image(i,j, 2) = color.bi();
