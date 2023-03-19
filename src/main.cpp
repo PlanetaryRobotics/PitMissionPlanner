@@ -37,7 +37,7 @@ struct PlannerConfiguration {
     // Rover
     double roverHeight                 =  1.0; // meters
     double roverSpeed                  = 0.01; // m/s
-    double roverFOV                    =   90; // degrees
+    double roverFOV                    =  180; // degrees
     double roverLateralSlopeLimit      = 12.0; // degrees
     double roverLongitudinalSlopeLimit = 20.0; // degrees
     double roverPointTurnSlopeLimit    =  5.0; // degrees
@@ -762,9 +762,24 @@ std::vector<Vantage> selectVantages(const std::vector<Vantage>& candidates,
             if( tooClose ) { continue; }
 
             for(int pi=0; pi<probes.size(); ++pi) {
-                if( !c.coverage[pi] ) { continue; }
+                // If this probe is visible, add to the score for this candidate.
+                if( c.coverage[pi] ) {
+                    // How many times has this probe been viewed?
                     int visCount = std::clamp<int>(visCounters[pi], 0, 10);
-                    scores[ci] += config.visMultipliers[visCount] * probes[pi].priority;
+                    // What is the angle between the camera normal and the
+                    // viewing ray from this candidate to this probe?
+                    double visAngle = 0.0;
+                    {
+                        Eigen::Vector3f vis, cam;
+                        vis << probes[pi].x-c.x, probes[pi].y-c.y, probes[pi].z-c.z;
+                        vis /= vis.norm();
+                        double camAngle = M_PI/180.0 * 45*(int)c.dir;
+                        cam << std::sin(camAngle), std::cos(camAngle), 0.0;
+                        visAngle = 180.0/M_PI * std::acos(vis.dot(cam));
+                    }
+                    double angleWeight = std::exp(-(visAngle/90.0)*(visAngle/90.0));
+                    scores[ci] += angleWeight * config.visMultipliers[visCount] * probes[pi].priority;
+                }
             }
         }
 
@@ -1626,7 +1641,7 @@ int main(int argc, char* argv[]) {
             ImageRGB img = baseImg;
 
             // Draw the landing site.
-            double r = upsample * 50.0/slopeAtlas.pitch();
+            double r = upsample * 5.0/slopeAtlas.pitch();
             drawCircle(img, landingSiteI*upsample, landingSiteJ*upsample, r, r+4, cm::Color(1.0, 1.0, 1.0));
 
             // Draw all coverage the rover has already visited.
