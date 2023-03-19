@@ -1,5 +1,5 @@
 [Basic]
-NumVantages = 24
+NumVantages = 15
 MapPitch    = 1.0
 OutputDir   = "./"
 
@@ -10,18 +10,18 @@ Height = 3.0
 [Rover]
 Height                 = 1.0
 Speed                  = 1.0
-FOV                    = 120
+FOV                    = 120 
 LateralSlopeLimit      = 10
 LongitudinalSlopeLimit = 20
 PointTurnSlopeLimit    = 10
 
 [Advanced]
-MeshFile = "../meshes/lmp-interior.ply"
+MeshFile = "../meshes/lmp-cave.ply"
 NumProbes            = 10000
 NumCandidates        = 10000
 MaxVisAngle          = 55
 MaxVisRange          = 300
-MinVantageSeparation = 20.0
+MinVantageSeparation = 15.0
 
 DistCostMultiplier  =  1.0
 SlopeCostMultiplier = 16.0

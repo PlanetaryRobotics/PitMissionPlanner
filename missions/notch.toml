@@ -10,7 +10,7 @@ Height = 3.0
 [Rover]
 Height                 = 1.0
 Speed                  = 1.0
-FOV                    = 90
+FOV                    = 120
 LateralSlopeLimit      = 10
 LongitudinalSlopeLimit = 20
 PointTurnSlopeLimit    = 10

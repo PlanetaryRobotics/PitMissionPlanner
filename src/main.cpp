@@ -9,6 +9,7 @@
 #include <fmt/format.h>
 #include <fmt/ostream.h>
 #include <array>
+#include <algorithm>
 #include <optional>
 #include <unordered_set>
 #include <iostream>
@@ -63,6 +64,8 @@ struct PlannerConfiguration {
 PlannerConfiguration config;
 
 void parseConfigFile(const std::string& fileName) {
+    const std::string fileDir = std::filesystem::path(fileName).parent_path();
+
     const toml::table tbl = toml::parse_file(fileName);
     config.numVantages  = tbl["Basic"]["NumVantages"].value_or(config.numVantages);
     config.mapPitch     = tbl["Basic"]["MapPitch"].value_or(config.mapPitch);
@@ -79,7 +82,7 @@ void parseConfigFile(const std::string& fileName) {
     config.roverLongitudinalSlopeLimit = tbl["Rover"]["LongitudinalSlopeLimit"].value_or(config.roverLongitudinalSlopeLimit);
     config.roverPointTurnSlopeLimit    = tbl["Rover"]["PointTurnSlopeLimit"].value_or(config.roverPointTurnSlopeLimit);
 
-    config.meshFile             = tbl["Advanced"]["MeshFile"].value_or(config.meshFile);
+    config.meshFile             = fileDir + "/" + tbl["Advanced"]["MeshFile"].value_or(config.meshFile);
     config.numProbes            = tbl["Advanced"]["NumProbes"].value_or(config.numProbes);
     config.numCandidates        = tbl["Advanced"]["NumCandidates"].value_or(config.numCandidates);
     config.maxVisAngle          = tbl["Advanced"]["MaxVisAngle"].value_or(config.maxVisAngle);
@@ -1485,10 +1488,12 @@ int main(int argc, char* argv[]) {
     saveEXR(vantageMap, config.outputDir+"vantages.exr");
 
     // Draw separate coverage maps for each vantage.
+    std::vector<TerrainMap<float>> coverageMaps;
     for(int vi=0; vi<vantages.size(); ++vi) {
         const auto& v = vantages[vi];
         std::vector<Vantage> tmp; tmp.push_back(v);
         auto coverageMap = buildCoverageMap(tmesh, elevationMap, tmp);
+        coverageMaps.push_back(coverageMap);
         int j = vantageMap.x2j(v.x);
         int i = vantageMap.y2i(v.y);
         drawCircle(coverageMap, v.x, v.y, vantages.size()+1, 2.0);
@@ -1605,6 +1610,12 @@ int main(int argc, char* argv[]) {
 
     // Animate the final path.
     {
+        // Create a directory for animation frames.
+        std::string animDir = config.outputDir + "/anim";
+        if( !std::filesystem::exists(animDir) ) {
+            std::filesystem::create_directory(animDir);
+        }
+
         int upsample = 4;
         ImageRGB baseImg(slopeAtlas.absolute, cm::ColormapType::Plasma, upsample);
 
@@ -1618,6 +1629,32 @@ int main(int argc, char* argv[]) {
             double r = upsample * 50.0/slopeAtlas.pitch();
             drawCircle(img, landingSiteI*upsample, landingSiteJ*upsample, r, r+4, cm::Color(1.0, 1.0, 1.0));
 
+            // Draw all coverage the rover has already visited.
+            // Don't check the first state because it will match the landing site.
+            for(int ff=1; ff<=f; ++ff) {
+                const auto s = path.states[ff];
+                const auto vIt = std::find(allSites.begin(), allSites.end(), s);
+                if( vIt != allSites.end() ) {
+                    int vIdx = std::distance(allSites.begin(), vIt);
+
+                    auto covMap = coverageMaps[vIdx-1];
+                    for(int i=0; i<covMap.rows; ++i) {
+                        for(int j=0; j<covMap.cols; ++j) {
+                            if( covMap(i,j) ) {
+                                for(int ii=0; ii<upsample; ++ii) {
+                                    for(int jj=0; jj<upsample; ++jj) {
+                                        const double alpha = 0.8;
+                                        img(i*upsample+ii, j*upsample+jj, 0) = img(i*upsample+ii, j*upsample+jj, 0) * alpha +   0*(1-alpha);
+                                        img(i*upsample+ii, j*upsample+jj, 1) = img(i*upsample+ii, j*upsample+jj, 1) * alpha + 255*(1-alpha);
+                                        img(i*upsample+ii, j*upsample+jj, 2) = img(i*upsample+ii, j*upsample+jj, 2) * alpha +   0*(1-alpha);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Draw a trail behind the rover.
             for(int ff=0; ff<f; ++ff) {
                 const auto& s0 = path.states[ff];
@@ -1625,10 +1662,17 @@ int main(int argc, char* argv[]) {
                 drawLine(img, s0.i*upsample,s0.j*upsample, s1.i*upsample,s1.j*upsample, cm::Color(1.0, 1.0, 1.0), 1.0*upsample);
             }
 
+            // Draw all vantages the rover has already visited.
+            for(int ff=1; ff<f; ++ff) {
+                const auto s = path.states[ff];
+                if( std::find(allSites.begin(), allSites.end(), s) != allSites.end() ) {
+                    drawTriangle(img, s.i*upsample, s.j*upsample, (int)s.d*45, cm::Color(1.0, 1.0, 1.0), 5*upsample, 8*upsample);
+                }
+            }
+
             // Draw the rover.
             drawTriangle(img, s.i*upsample, s.j*upsample, (int)s.d*45, cm::Color(1.0, 0.0, 0.0), 5*upsample, 8*upsample);
-                
-            savePNG(img, fmt::format("anim_{:05}.png", f));
+            savePNG(img, animDir+"/"+fmt::format("anim_{:05}.png", f));
         }
     }
 
