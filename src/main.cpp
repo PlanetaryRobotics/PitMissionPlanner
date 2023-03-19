@@ -761,24 +761,41 @@ std::vector<Vantage> selectVantages(const std::vector<Vantage>& candidates,
             }
             if( tooClose ) { continue; }
 
+            // Otherwise, calculate "how good" this candidate is
+            // based on the visibility probes it can see.
+            // There are three factors to consider here:
+            //   1. Does this candidate "see" new probes that haven't been seen yet? (countWeight)
+            //   2. Are the probes this candidate can see in the center of the rover's FOV? (angleWeight)
+            //   3. The science priority assigned to each probe by the user. (probes[pi].priority)
             for(int pi=0; pi<probes.size(); ++pi) {
                 // If this probe is visible, add to the score for this candidate.
                 if( c.coverage[pi] ) {
                     // How many times has this probe been viewed?
                     int visCount = std::clamp<int>(visCounters[pi], 0, 10);
-                    // What is the angle between the camera normal and the
-                    // viewing ray from this candidate to this probe?
+                    double countWeight = config.visMultipliers[visCount];
+
+                    // Compute the angle between (1) the camera's normal vector
+                    // and (2) the viewing vector from the candidate to the probe.
                     double visAngle = 0.0;
                     {
-                        Eigen::Vector3f vis, cam;
-                        vis << probes[pi].x-c.x, probes[pi].y-c.y, probes[pi].z-c.z;
-                        vis /= vis.norm();
+                        // (1)
+                        Eigen::Vector3f cam;
                         double camAngle = M_PI/180.0 * 45*(int)c.dir;
                         cam << std::sin(camAngle), std::cos(camAngle), 0.0;
+
+                        // (2)
+                        Eigen::Vector3f vis;
+                        vis << probes[pi].x-c.x, probes[pi].y-c.y, probes[pi].z-c.z;
+                        vis /= vis.norm();
+
+                        // How far (in deg) is the view vector from the center of the rover's FOV?
                         visAngle = 180.0/M_PI * std::acos(vis.dot(cam));
                     }
+                    // Weight views in the center of the FOV more than views on the edges of the FOV.
                     double angleWeight = std::exp(-(visAngle/90.0)*(visAngle/90.0));
-                    scores[ci] += angleWeight * config.visMultipliers[visCount] * probes[pi].priority;
+
+                    // Add to the score for this vantage candidate.
+                    scores[ci] += countWeight * angleWeight * probes[pi].priority;
                 }
             }
         }
