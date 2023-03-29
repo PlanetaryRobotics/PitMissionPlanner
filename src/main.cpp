@@ -1649,7 +1649,7 @@ int main(int argc, char* argv[]) {
         for(const auto& p : path.states) {
             Vantage v;
             v.x = elevationMap.j2x(p.j);
-            v.y = elevationMap.j2x(p.i);
+            v.y = -1*elevationMap.j2x(p.i) + elevationMap.height();
             v.z = elevationMap(p.i, p.j) + config.roverHeight;
             file << fmt::format("{:.2f},{:.2f},{:.2f},{},{},", v.x, v.y, v.z, (int)p.d, directionToString(p.d));
 
