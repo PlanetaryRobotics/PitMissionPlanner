@@ -25,9 +25,10 @@
 
 struct PlannerConfiguration {
     // Basic
-    int numVantages       =   18; // 
-    double mapPitch       =  1.0; // meters
-    std::string outputDir = "./"; //
+    int numVantages       =    18; // 
+    double mapPitch       =   1.0; // meters
+    std::string outputDir =  "./"; //
+    bool drawAnimation    = false;
 
     // Lander
     double landingSiteX = 100; // meters
@@ -67,9 +68,10 @@ void parseConfigFile(const std::string& fileName) {
     const std::string fileDir = std::filesystem::path(fileName).parent_path();
 
     const toml::table tbl = toml::parse_file(fileName);
-    config.numVantages  = tbl["Basic"]["NumVantages"].value_or(config.numVantages);
-    config.mapPitch     = tbl["Basic"]["MapPitch"].value_or(config.mapPitch);
-    config.outputDir    = tbl["Basic"]["OutputDir"].value_or(config.outputDir);
+    config.numVantages   = tbl["Basic"]["NumVantages"].value_or(config.numVantages);
+    config.mapPitch      = tbl["Basic"]["MapPitch"].value_or(config.mapPitch);
+    config.outputDir     = tbl["Basic"]["OutputDir"].value_or(config.outputDir) + "/";
+    config.drawAnimation = tbl["Basic"]["DrawAnimation"].value_or(config.drawAnimation);
 
     config.landingSiteX = tbl["Lander"]["LocationXY"][0].value_or(config.landingSiteX);
     config.landingSiteY = tbl["Lander"]["LocationXY"][1].value_or(config.landingSiteY);
@@ -106,6 +108,7 @@ void parseCommandLine(int argc, char* argv[]) {
         fmt::print("      -nv,  --NumVantages             The number of vantages to include in the route.\n");
         fmt::print("      -p,   --MapPitch                The resolution (meters) to use for generating maps.\n");
         fmt::print("      -o,   --OutputDir               A directory to store the planner output.\n");
+        fmt::print("   -anim,   --DrawAnimation           Generate an animation of the rover's route.\n");
         fmt::print("\n");
 
         fmt::print("    [Lander]\n");
@@ -152,6 +155,8 @@ void parseCommandLine(int argc, char* argv[]) {
     cmdl({"NumVantages",      "nv"}, config.numVantages)                 >> config.numVantages;
     cmdl({"MapPitch",          "p"}, config.mapPitch)                    >> config.mapPitch;
     cmdl({"OutputDir",         "o"}, config.outputDir)                   >> config.outputDir;
+    config.outputDir += "/";
+    config.drawAnimation |= cmdl[{"DrawAnimation", "anim"}];
 
     // Lander
     cmdl({"LandingSiteX",      "x"}, config.landingSiteX)                >> config.landingSiteX;
@@ -192,7 +197,6 @@ std::string directionToString(const Direction& d) {
     const std::string dir2name[] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
     return dir2name[(int)d];
 }
-
 
 struct SlopeAtlas {
     TerrainMapFloat absolute;
@@ -559,8 +563,8 @@ TerrainMapU8 buildReachabilityMap(const TerrainMapFloat& commsMap,
 }
 
 TerrainMapFloat buildCommsMap(const TerrainMesh& tmesh,
-                               const TerrainMapFloat& elevationMap,
-                               const Path::State& landingSite) {
+                              const TerrainMapFloat& elevationMap,
+                              const Path::State& landingSite) {
 
     TerrainMapFloat commsMap(elevationMap.width(),
                          elevationMap.height(),
@@ -778,12 +782,12 @@ std::vector<Vantage> selectVantages(const std::vector<Vantage>& candidates,
                     // and (2) the viewing vector from the candidate to the probe.
                     double visAngle = 0.0;
                     {
-                        // (1)
+                        // (1) A vector pointing down the boresight of the rover's camera.
                         Eigen::Vector3f cam;
                         double camAngle = M_PI/180.0 * 45*(int)c.dir;
                         cam << std::sin(camAngle), std::cos(camAngle), 0.0;
 
-                        // (2)
+                        // (2) The normalized vector from the probe to the candidate.
                         Eigen::Vector3f vis;
                         vis << probes[pi].x-c.x, probes[pi].y-c.y, probes[pi].z-c.z;
                         vis /= vis.norm();
@@ -792,6 +796,7 @@ std::vector<Vantage> selectVantages(const std::vector<Vantage>& candidates,
                         visAngle = 180.0/M_PI * std::acos(vis.dot(cam));
                     }
                     // Weight views in the center of the FOV more than views on the edges of the FOV.
+                    // Use a scaled gaussian w(x) = e^(-(x/90)^2). This is an arbitrary choice.
                     double angleWeight = std::exp(-(visAngle/90.0)*(visAngle/90.0));
 
                     // Add to the score for this vantage candidate.
@@ -896,11 +901,12 @@ TerrainMapFloat buildCoverageMap(const TerrainMesh& tmesh,
     return coverageMap;
 }
 
-std::vector<Path> multipathplan(const SlopeAtlas& slopeAtlas,
-                                const TerrainMapFloat& commsMap,
-                                const Path::State& start,
-                                const std::vector<Path::State>& goals,
-                                const int threadID = 0) {
+std::pair<std::vector<Path>, int>
+multipathplan(const SlopeAtlas& slopeAtlas,
+              const TerrainMapFloat& commsMap,
+              const Path::State& start,
+              const std::vector<Path::State>& goals,
+              const int threadID = 0) {
     int ROWS = slopeAtlas.rows();
     int COLS = slopeAtlas.cols();
 
@@ -970,6 +976,7 @@ std::vector<Path> multipathplan(const SlopeAtlas& slopeAtlas,
 
         // Otherwise, add it to closed and expand it.
         closed.insert(currState);
+        expansions++;
 
         // If this state is a goal, remove it from the goal set!
         auto it = goalSet.find(currState);
@@ -1031,7 +1038,7 @@ std::vector<Path> multipathplan(const SlopeAtlas& slopeAtlas,
         paths.push_back(path);
     }
 
-    return paths;
+    return std::make_pair(paths, expansions);
 }
 
 std::pair<std::vector<int>,int64_t> solveTSP(const Eigen::MatrixXd& costs, int depot=0) {
@@ -1146,6 +1153,8 @@ std::vector<std::vector<Path>> planAllPairsSLOW(const std::vector<Path::State>& 
     allPaths.resize(sites.size());
     for(auto& pathList : allPaths) { pathList.resize(sites.size()); }
 
+    int totalExpansions = 0;
+
     // Generate all combinations of two indices into the allSites vector.
     #pragma omp parallel for
     for(int a=0; a<sites.size()-1; ++a) {
@@ -1154,7 +1163,11 @@ std::vector<std::vector<Path>> planAllPairsSLOW(const std::vector<Path::State>& 
         for(int b=a+1; b<sites.size(); ++b) {
             std::vector<Path::State> goals;
             goals.push_back(sites[b]);
-            auto paths = multipathplan(slopeAtlas, commsMap, start, goals, a);
+            auto [paths, expansions] = multipathplan(slopeAtlas, commsMap, start, goals, a);
+            #pragma omp critical
+            {
+                totalExpansions += expansions;
+            }
 
             for( const auto& path : paths ) {
                 if( path.states.size() == 0 ) { continue; }
@@ -1173,8 +1186,9 @@ std::vector<std::vector<Path>> planAllPairsSLOW(const std::vector<Path::State>& 
                 allPaths[b][a] = reverse(path);
             }
         }
-
     }
+    fmt::print("Total Expansions (Separate): {}\n", totalExpansions);
+
     return allPaths;
 }
 
@@ -1184,6 +1198,8 @@ std::vector<std::vector<Path>> planAllPairs(const std::vector<Path::State>& site
     std::vector<std::vector<Path>> allPaths;
     allPaths.resize(sites.size());
     for(auto& pathList : allPaths) { pathList.resize(sites.size()); }
+
+    int totalExpansions = 0;
 
     // Generate all combinations of two indices into the allSites vector.
     #pragma omp parallel for
@@ -1195,7 +1211,11 @@ std::vector<std::vector<Path>> planAllPairs(const std::vector<Path::State>& site
             goals.push_back(sites[b]);
         }
 
-        auto paths = multipathplan(slopeAtlas, commsMap, start, goals, a);
+        auto [paths, expansions] = multipathplan(slopeAtlas, commsMap, start, goals, a);
+        #pragma omp critical
+        {
+            totalExpansions += expansions;
+        }
 
         for( const auto& path : paths ) {
             if( path.states.size() == 0 ) { continue; }
@@ -1215,6 +1235,7 @@ std::vector<std::vector<Path>> planAllPairs(const std::vector<Path::State>& site
             allPaths[b][a] = reverse(path);
         }
     }
+    fmt::print("Total Expansions (Fused): {}\n", totalExpansions);
 
     // Draw all paths on their own map.
     for(int a=0; a<allPaths.size(); ++a) {
@@ -1413,31 +1434,26 @@ int main(int argc, char* argv[]) {
             drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
             drawTriangle(map, landingSiteX, landingSiteY, 0, 100, 5, 10);
             saveEXR(map, config.outputDir+"slope.exr");
-            savePFM(map, config.outputDir+"slope.pfm");
         }
         {
             auto map = slopeAtlas.north;
-            //drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
+            drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
             saveEXR(map, config.outputDir+"slopeN.exr");
-            savePFM(map, config.outputDir+"slopeN.pfm");
         }
         {
             auto map = slopeAtlas.east;
-            //drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
+            drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
             saveEXR(map, config.outputDir+"slopeE.exr");
-            savePFM(map, config.outputDir+"slopeE.pfm");
         }
         {
             auto map = slopeAtlas.northeast;
-            //drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
+            drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
             saveEXR(map, config.outputDir+"slopeNE.exr");
-            savePFM(map, config.outputDir+"slopeNE.pfm");
         }
         {
             auto map = slopeAtlas.southeast;
-            //drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
+            drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
             saveEXR(map, config.outputDir+"slopeSE.exr");
-            savePFM(map, config.outputDir+"slopeSE.pfm");
         }
 
 
@@ -1451,40 +1467,39 @@ int main(int argc, char* argv[]) {
         };
         {
             auto map = negate(slopeAtlas.north);
-            //drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
+            drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
             saveEXR(map, config.outputDir+"slopeS.exr");
-            savePFM(map, config.outputDir+"slopeS.pfm");
         }
         {
             auto map = negate(slopeAtlas.east);
-            //drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
+            drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
             saveEXR(map, config.outputDir+"slopeW.exr");
-            savePFM(map, config.outputDir+"slopeW.pfm");
         }
         {
             auto map = negate(slopeAtlas.northeast);
-            //drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
+            drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
             saveEXR(map, config.outputDir+"slopeSW.exr");
-            savePFM(map, config.outputDir+"slopeSW.pfm");
         }
         {
             auto map = negate(slopeAtlas.southeast);
-            //drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
+            drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
             saveEXR(map, config.outputDir+"slopeNW.exr");
-            savePFM(map, config.outputDir+"slopeNW.pfm");
         }
-
-
         {
             auto map = priorityMap;
             drawCircle(map, landingSiteX, landingSiteY, 10, 3.0);
             saveEXR(map, config.outputDir+"priority.exr");
-            savePFM(map, config.outputDir+"priority.pfm");
         }
         {
             auto map = commsMap;
             drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
             saveEXR(map, config.outputDir+"comms.exr");
+
+            int upsample = 4;
+            double r = upsample * 2.5/slopeAtlas.pitch();
+            ImageRGB img(commsMap, cm::ColormapType::Plasma, upsample);
+            drawCircle(img, landingSiteI*upsample, landingSiteJ*upsample, r, cm::Color(1.0, 0.0, 0.0));
+            savePNG(img, config.outputDir+"comms.png");
         }
         {
             auto map = probeMap;
@@ -1572,7 +1587,7 @@ int main(int argc, char* argv[]) {
 
     // Compute paths between all pairs of k vantages plus the landing site.
     auto tstart = std::chrono::high_resolution_clock::now();
-    //const auto paths2 = planAllPairsSLOW(allSites, slopeAtlas, commsMap);
+    const auto paths2 = planAllPairsSLOW(allSites, slopeAtlas, commsMap);
     auto tmid = std::chrono::high_resolution_clock::now();
     const auto paths = planAllPairs(allSites, slopeAtlas, commsMap);
     auto tstop = std::chrono::high_resolution_clock::now();
@@ -1629,19 +1644,32 @@ int main(int argc, char* argv[]) {
     {
         std::ofstream file;
         file.open(config.outputDir+"route.csv");
-        file << fmt::format("x,y,z,i,j,d\n");
+        file << fmt::format("x,y,z,dir_num,dir_name,is_vantage,"
+                            "rover_roll_deg,rover_pitch_deg,rover_yaw_deg\n");
         for(const auto& p : path.states) {
             Vantage v;
             v.x = elevationMap.j2x(p.j);
-            v.y = elevationMap.j2x(p.i);
+            v.y = -1*elevationMap.j2x(p.i) + elevationMap.height();
             v.z = elevationMap(p.i, p.j) + config.roverHeight;
-            file << fmt::format("{},{},{},{},{},{}\n", v.x, v.y, v.z, p.i, p.j, (int)p.d);
+            file << fmt::format("{:.2f},{:.2f},{:.2f},{},{},", v.x, v.y, v.z, (int)p.d, directionToString(p.d));
+
+            // Is this state a vantage?
+            int is_vantage = 0;
+            if( p != path.states[0] && std::find(allSites.begin(), allSites.end(), p) != allSites.end() ) {
+                is_vantage = 1;
+            }
+            file << fmt::format("{},", is_vantage);
+
+            double rover_roll  = computeLateralSlope(p, slopeAtlas);
+            double rover_pitch = computeLongitudinalSlope(p, slopeAtlas);
+            double rover_yaw   = 45 * (int)p.d;
+            file << fmt::format("{:.2f},{:.2f},{:.2f}\n", rover_roll, rover_pitch, rover_yaw);
         }
         file.close();
     }
 
     // Animate the final path.
-    {
+    if( config.drawAnimation ) {
         // Create a directory for animation frames.
         std::string animDir = config.outputDir + "/anim";
         if( !std::filesystem::exists(animDir) ) {
@@ -1653,7 +1681,7 @@ int main(int argc, char* argv[]) {
 
         #pragma omp parallel for
         for(int f=0; f<path.states.size(); ++f) {
-            fmt::print("Animating frame {}...\n", f);
+            //fmt::print("Animating frame {}...\n", f);
             const auto& s = path.states[f];
             ImageRGB img = baseImg;
 

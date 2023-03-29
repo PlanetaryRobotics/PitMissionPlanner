@@ -100,7 +100,7 @@ void drawCircle(ImageRGB& image, int ci, int cj, double r, double R, const tinyc
 }
 
 void drawCircle(ImageRGB& image, int ci, int cj, double R, const tinycolormap::Color& color) {
-    drawCircle(image, ci, cj, R, 0, color);
+    drawCircle(image, ci, cj, 0, R, color);
 }
 
 void drawTriangle(ImageRGB& image, int ci, int cj, double deg, const tinycolormap::Color& color, double W = 2, double H = 4) {
