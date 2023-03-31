@@ -18,7 +18,7 @@ find_package(ortools REQUIRED)
 
 add_subdirectory(ext/)
 
-add_executable(planranger src/main.cpp src/terrainmesh.cpp src/terrainmap.cpp src/config.cpp src/maps.cpp src/path.cpp src/vantage.cpp)
+add_executable(planranger src/main.cpp src/terrainmesh.cpp src/terrainmap.cpp src/config.cpp src/maps.cpp src/path.cpp src/vantage.cpp src/plan.cpp)
 target_include_directories(planranger PRIVATE ext/ src/)
 target_link_libraries(planranger fmt embree OpenMP::OpenMP_CXX miniz Eigen3::Eigen ortools::ortools)
 
