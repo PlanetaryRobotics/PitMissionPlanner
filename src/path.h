@@ -50,8 +50,23 @@ struct SlopeAtlas {
         size_t cols() const { return absolute.cols; }
         double pitch() const { return absolute.pitch; }
 };
+namespace std {
+    template <>
+    struct hash<Path::State> {
+        std::size_t operator()(const Path::State& p) const {
+            // pack two int32 into one uint64
+            std::size_t res;
+            res  = (std::size_t)p.i << 32;
+            res |= (std::size_t)p.j & 0x00000000FFFFFFFF;
+            // use boost hash_combine to mix in the direction as well.
+            res ^= (std::size_t)p.d + 0x9e3779b9 + (res << 6) + (res >> 2);
+            return res;
+        }
+    };
+}
 double directionToDegrees(const Direction& d);
 std::string directionToString(const Direction& d);
+Path assembleRoute(const std::vector<int>& route, const std::vector<std::vector<Path>> paths);
 Path append(const Path& a, const Path& b);
 Path reverse(const Path& path);
 uint8_t setBit(uint8_t byte, uint8_t bit);
@@ -62,4 +77,7 @@ void setMapBit(TerrainMapU8& map, const Path::State& state);
 std::vector<Path::State> getSuccessors(const Path::State& p, const SlopeAtlas& slopeAtlas, const TerrainMapFloat& commsMap);
 double computeLongitudinalSlope(const Path::State& s, const SlopeAtlas& slopeAtlas);
 double computeLateralSlope(const Path::State& s, const SlopeAtlas& slopeAtlas);
+double octileDistance(const Path::State& a, const Path::State& b);
+Direction directionFromTo(const Path::State& from, const Path::State& to);
+
 #endif 

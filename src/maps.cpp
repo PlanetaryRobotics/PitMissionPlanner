@@ -156,3 +156,70 @@ TerrainMapFloat buildCommsMap(const TerrainMesh& tmesh,
 
     return commsMap;
 }
+
+TerrainMapFloat buildCoverageMap(const TerrainMesh& tmesh,
+                                 const TerrainMapFloat& elevationMap,
+                                 const std::vector<Vantage>& vantages) {
+
+    TerrainMapFloat coverageMap(elevationMap.width(), elevationMap.height(), elevationMap.pitch);
+
+    for(int vi=0; vi<vantages.size(); ++vi) {
+        auto& v = vantages[vi];
+        fmt::print("[{}/{}] Generating coverage maps.\n", vi, vantages.size());
+        #pragma omp parallel for
+        for(int ri=0; ri<coverageMap.rows; ++ri) {
+            for(int rj=0; rj<coverageMap.cols; ++rj) {
+                const double terrainX = elevationMap.j2x(rj);
+                const double terrainY = elevationMap.i2y(ri);
+                const double terrainZ = elevationMap(ri, rj);
+
+                // Is this ray in front of the rover and within its field of view?
+                // FIXME(Jordan): Do this calculation in 3d, not in 2d.
+                {
+                    const double roverAngle = directionToDegrees(v.dir) * M_PI/180.0;
+                    const double rx = std::cos(roverAngle);
+                    const double ry = std::sin(roverAngle);
+
+                    const double vtx = terrainX-v.x;
+                    const double vty = terrainY-v.y;
+                    const double vtnorm = std::sqrt(vtx*vtx+vty*vty);
+
+                    const double viewAngle = 180.0/M_PI * std::acos( (rx*vtx+ry*vty) / vtnorm );
+                    if( std::abs(viewAngle) > config.roverFOV/2 ) {
+                        continue;
+                    }
+                }
+
+                TerrainMesh::Ray ray;
+                ray.oX = v.x;
+                ray.oY = v.y;
+                ray.oZ = v.z+config.roverHeight;
+                ray.dX = terrainX-ray.oX;
+                ray.dY = terrainY-ray.oY;
+                ray.dZ = terrainZ-ray.oZ;
+                double rayNorm = std::sqrt(ray.dX*ray.dX + ray.dY*ray.dY + ray.dZ*ray.dZ);
+                ray.dX /= rayNorm;
+                ray.dY /= rayNorm;
+                ray.dZ /= rayNorm;
+                const auto hit = tmesh.raytrace(ray);
+                if( hit ) {
+                    double hitAngle = 180/M_PI * std::acos(-ray.dX*hit->nx-ray.dY*hit->ny-ray.dZ*hit->nz);
+                    double hitDist = std::sqrt((ray.oX-hit->x)*(ray.oX-hit->x) +
+                                               (ray.oY-hit->y)*(ray.oY-hit->y) +
+                                               (ray.oZ-hit->z)*(ray.oZ-hit->z));
+                    if( hitAngle < config.maxVisAngle && hitDist < config.maxVisRange && std::abs(rayNorm-hitDist) < rayNorm*0.05 ) { 
+                        coverageMap(ri, rj)++;
+                    }
+                } 
+            }
+        }
+    }
+    for(const auto& v : vantages) {
+        const double roverAngle = directionToDegrees(v.dir) * M_PI/180.0;
+        const double rx = std::cos(roverAngle);
+        const double ry = std::sin(roverAngle);
+        drawCircle(coverageMap, v.x+4*rx, v.y+4*ry, (float)2*vantages.size()+10, 1.0);
+        drawCircle(coverageMap, v.x, v.y, (float)2*vantages.size(), 2.0);
+    }
+    return coverageMap;
+}

@@ -1,6 +1,17 @@
 #include "path.h"
 #include <cassert>
-
+Path assembleRoute(const std::vector<int>& route,
+                   const std::vector<std::vector<Path>> paths) {
+    // Walk the route, lookup each path segment, and glue them all together.
+    Path finalPath;
+    finalPath.cost = 0;
+    finalPath.dist = 0;
+    for(int i=0; i<route.size()-1; ++i) {
+        const Path& path = paths[route[i]][route[i+1]];
+        finalPath = append(finalPath, path);
+    }
+    return finalPath;
+}
 Path append(const Path& a, const Path& b) {
     assert(a.cost >= 0); assert(a.dist >= 0);
     assert(b.cost >= 0); assert(b.dist >= 0);
@@ -168,3 +179,32 @@ std::string directionToString(const Direction& d) {
     const std::string dir2name[] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
     return dir2name[(int)d];
 }
+double octileDistance(const Path::State& a, const Path::State& b) {
+    // Branchless octile distance
+    int di = std::abs(a.i-b.i);
+    int dj = std::abs(a.j-b.j);
+    constexpr double diagonal = std::sqrt(2);
+    constexpr double twoCardinalMinusDiagonal = 2-diagonal;
+    return (twoCardinalMinusDiagonal*abs(di-dj) + diagonal*(di+dj)) / 2;
+}
+
+Direction directionFromTo(const Path::State& from, const Path::State& to) {
+    constexpr double tan_pi_8 = std::tan(M_PI/8.0);
+
+    const int di = to.i-from.i;
+    const int dj = to.j-from.j;
+
+    if( di <= 0 and std::abs(dj) <= tan_pi_8 * -di ) { return Direction::N; }
+    if( di >= 0 and std::abs(dj) <= tan_pi_8 *  di ) { return Direction::S; }
+
+    if( dj >= 0 and std::abs(di) <= tan_pi_8 *  dj ) { return Direction::E; }
+    if( dj <= 0 and std::abs(di) <= tan_pi_8 * -dj ) { return Direction::W; }
+
+    if( di < 0 and dj > 0 ) { return Direction::NE; }
+    if( di > 0 and dj > 0 ) { return Direction::SE; }
+
+    if( di < 0 and dj < 0 ) { return Direction::NW; }
+    if( di > 0 and dj < 0 ) { return Direction::SW; }
+
+    return to.d;
+};
