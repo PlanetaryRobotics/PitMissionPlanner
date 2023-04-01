@@ -398,22 +398,11 @@ int main(int argc, char* argv[]) {
                 const auto vIt = std::find(allSites.begin(), allSites.end(), s);
                 if( vIt != allSites.end() ) {
                     int vIdx = std::distance(allSites.begin(), vIt);
-
-                    auto covMap = coverageMaps[vIdx-1];
-                    for(int i=0; i<covMap.rows; ++i) {
-                        for(int j=0; j<covMap.cols; ++j) {
-                            if( covMap(i,j) ) {
-                                for(int ii=0; ii<upsample; ++ii) {
-                                    for(int jj=0; jj<upsample; ++jj) {
-                                        const double alpha = 0.8;
-                                        img(i*upsample+ii, j*upsample+jj, 0) = img(i*upsample+ii, j*upsample+jj, 0) * alpha +   0*(1-alpha);
-                                        img(i*upsample+ii, j*upsample+jj, 1) = img(i*upsample+ii, j*upsample+jj, 1) * alpha + 255*(1-alpha);
-                                        img(i*upsample+ii, j*upsample+jj, 2) = img(i*upsample+ii, j*upsample+jj, 2) * alpha +   0*(1-alpha);
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    tinycolormap::Color green(0.0, 1.0, 0.0);
+                    tinycolormap::Color black(0.0, 0.0, 0.0);
+                    ImageRGB overlayImage(coverageMaps[vIdx-1], 0.5, black, green, upsample);
+                    double alpha = 0.80;
+                    alphaBlend(img, overlayImage, alpha, black);
                 }
             }
 

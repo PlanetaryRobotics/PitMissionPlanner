@@ -9,9 +9,37 @@
 #include "stb_image_write.h"
 
 #include <fmt/format.h>
+#include <cassert>
 
 class ImageRGB {
     public:
+        
+        ImageRGB(const TerrainMap<float>& map,
+                 double threshold,
+                 const tinycolormap::Color& lowColor, 
+                 const tinycolormap::Color& highColor, 
+                 int upsample = 1  ) :
+                 _rows(upsample*map.rows),
+                _cols(upsample*map.cols),
+                _exposure(0.0),
+                _offset(0.0) {
+                    _data.resize(_rows * _cols * _channels);
+                    for (int i = 0; i < _rows; i++) {
+                        for (int j = 0; j < _cols; j++) {
+                            if (map(i/upsample, j/upsample) <= threshold) {
+                                this->operator()(i, j, 0) = lowColor.ri();
+                                this->operator()(i, j, 1) = lowColor.gi();
+                                this->operator()(i, j, 2) = lowColor.bi();
+                            } else {
+                                this->operator()(i, j, 0) = highColor.ri();
+                                this->operator()(i, j, 1) = highColor.gi();
+                                this->operator()(i, j, 2) = highColor.bi();
+                            }
+                        }
+                    }
+    
+                }
+
         ImageRGB(const TerrainMap<float>& map, const tinycolormap::ColormapType& cmapType, int upsample = 1, double exposure=0.0, double offset=0.0) :
             _rows(upsample*map.rows), _cols(upsample*map.cols), _exposure(exposure), _offset(offset) {
             _data.resize(_rows * _cols * _channels);
@@ -45,6 +73,7 @@ class ImageRGB {
 
         uint8_t& operator()(int i, int j, int c) { return _data[(i*_cols + j)*_channels + c]; }
         const uint8_t& operator()(int i, int j, int c) const { return _data[(i*_cols + j)*_channels + c]; }
+        
 
     private:
         const int _rows = 0;
@@ -173,6 +202,32 @@ void drawLine(ImageRGB& image, double ai, double aj, double bi, double bj, const
 void savePNG(const ImageRGB& image, const std::string& path) {
     int stride = image.width() * image.channels();
     int err = stbi_write_png(path.c_str(), image.width(), image.height(), image.channels(), image.data(), stride);
+}
+
+ImageRGB alphaBlend(ImageRGB& baseImage,
+                    const ImageRGB& overlayImage,
+                    double alpha, const tinycolormap::Color& transparentColor) {
+    for( int x_ind = 0; x_ind < baseImage.rows(); x_ind++) {
+        for (int y_ind = 0; y_ind < baseImage.cols(); y_ind++) {
+            uint8_t baseR = baseImage(x_ind, y_ind, 0);
+            uint8_t baseG = baseImage(x_ind, y_ind, 1);
+            uint8_t baseB = baseImage(x_ind, y_ind, 2);
+
+            uint8_t overlayR = overlayImage(x_ind, y_ind, 0);
+            uint8_t overlayG = overlayImage(x_ind, y_ind, 1);
+            uint8_t overlayB = overlayImage(x_ind, y_ind, 2);
+
+            if (!(overlayR == transparentColor.ri() && 
+                    overlayG == transparentColor.gi() && 
+                    overlayB == transparentColor.bi())) {
+                baseImage(x_ind, y_ind, 0) = baseR * alpha + overlayR * (1.0 - alpha);
+                baseImage(x_ind, y_ind, 1) = baseG * alpha + overlayG * (1.0 - alpha);
+                baseImage(x_ind, y_ind, 2) = baseB * alpha + overlayB * (1.0 - alpha);
+            }
+        }
+    }
+return baseImage;
+
 }
 
 #endif // IMAGE_H
