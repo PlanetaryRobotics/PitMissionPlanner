@@ -20,9 +20,18 @@ add_subdirectory(ext/)
 
 add_executable(planranger src/main.cpp src/terrainmesh.cpp src/terrainmap.cpp src/config.cpp src/maps.cpp src/path.cpp src/vantage.cpp src/plan.cpp)
 target_include_directories(planranger PRIVATE ext/ src/)
+file(GLOB all_clang_files
+  "src/*.h"
+  "src/*.cpp")
 target_link_libraries(planranger fmt embree OpenMP::OpenMP_CXX miniz Eigen3::Eigen ortools::ortools)
 
 if (UNIX AND NOT APPLE)
   target_link_libraries(planranger stdc++fs)
 endif (UNIX AND NOT APPLE)
+add_custom_target(
+        clangformat
+        COMMAND /usr/bin/clang-format
+        -style=file
+        -i
+        ${all_clang_files})
 
