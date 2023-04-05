@@ -4,16 +4,23 @@
 
 #include "terrainmap.h"
 #include "config.h"
+
 extern PlannerConfiguration config;
 enum class Direction : int8_t { N = 0, NE, E, SE, S, SW, W, NW };
+
 struct Path {
     struct State {
         int i = 0;
         int j = 0;
         Direction d = Direction::N;
+
         bool operator==(const State& rhs) const {
             return rhs.i==i && rhs.j==j && d==rhs.d;
         }
+        bool operator!=(const State& rhs) const {
+            return !(*this == rhs);
+        }
+
         bool sameLocation(const State& rhs) { return rhs.i==i && rhs.j==j; }
         bool sameDirection(const State& rhs) { return d==rhs.d; }
     };
@@ -23,6 +30,7 @@ struct Path {
     double cost = 0.0;
     double dist = 0.0;
 };
+
 struct SlopeAtlas {
     TerrainMapFloat absolute;
     TerrainMapFloat north;
@@ -50,6 +58,7 @@ struct SlopeAtlas {
         size_t cols() const { return absolute.cols; }
         double pitch() const { return absolute.pitch; }
 };
+
 namespace std {
     template <>
     struct hash<Path::State> {
@@ -64,11 +73,17 @@ namespace std {
         }
     };
 }
+
 double directionToDegrees(const Direction& d);
+
 std::string directionToString(const Direction& d);
+
 Path assembleRoute(const std::vector<int>& route, const std::vector<std::vector<Path>> paths);
+
 Path append(const Path& a, const Path& b);
+
 Path reverse(const Path& path);
+
 uint8_t setBit(uint8_t byte, uint8_t bit);
 uint8_t clearBit(uint8_t byte, uint8_t bit);
 bool checkBit(uint8_t byte, uint8_t bit);

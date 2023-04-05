@@ -1,5 +1,6 @@
 #include "path.h"
 #include <cassert>
+
 Path assembleRoute(const std::vector<int>& route,
                    const std::vector<std::vector<Path>> paths) {
     // Walk the route, lookup each path segment, and glue them all together.
