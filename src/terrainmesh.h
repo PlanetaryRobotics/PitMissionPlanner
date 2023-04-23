@@ -2,16 +2,16 @@
 #ifndef TERRAINMESH_H
 #define TERRAINMESH_H
 
-#include <embree3/rtcore.h>
 #include <array>
+#include <embree3/rtcore.h>
 #include <limits>
 #include <optional>
 #include <string>
 #include <vector>
 
 class TerrainMesh {
-public:
-    TerrainMesh(const std::string& meshfile);
+  public:
+    TerrainMesh(const std::string &meshfile);
     ~TerrainMesh();
 
     double minX() const;
@@ -34,10 +34,10 @@ public:
         size_t faceIndex;
     };
 
-    std::optional<Hit> raytrace(const Ray& ray) const;
+    std::optional<Hit> raytrace(const Ray &ray) const;
 
-private:
-    const std::string& filename;
+  private:
+    const std::string &filename;
     std::vector<float> vertexPositions;
     std::vector<float> vertexNormals;
     std::vector<float> vertexPriorities;
