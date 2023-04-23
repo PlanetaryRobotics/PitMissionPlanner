@@ -21,7 +21,7 @@ add_executable(planranger
     src/terrainmap.cpp
     src/terrainmesh.cpp
     src/config.cpp
-    src/maps.cpp
+    src/buildmaps.cpp
     src/path.cpp
     src/vantage.cpp
     src/plan.cpp

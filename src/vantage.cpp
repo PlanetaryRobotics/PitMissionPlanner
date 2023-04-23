@@ -28,11 +28,17 @@ std::pair<std::vector<Vantage>, TerrainMapFloat> generateVantageCandidates(const
     // NOTE(Jordan): I'm currently duplicating each candidate vantage eight times,
     // once per rover facing direction. This is fairly wasteful. We should probably evaluate
     // all directions at each location and pick the one direction that has the best coverage.
+    int iterations = 0;
     std::vector<Vantage> candidates;
     while (candidates.size() < config.numCandidates) {
         Path::State state;
         state.i = reachMap.rows * static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
         state.j = reachMap.cols * static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
+
+        if( iterations++ > 10*config.numCandidates ) {
+            fmt::print("ERROR: No reachable vantages found!\n");
+            exit(0);
+        }
 
         for (int d = 0; d < 8; ++d) {
             state.d = static_cast<Direction>(d);
@@ -44,7 +50,6 @@ std::pair<std::vector<Vantage>, TerrainMapFloat> generateVantageCandidates(const
                 v.z = elevationMap(state.i, state.j) + config.roverHeight;
                 v.dir = state.d;
                 candidates.push_back(v);
-                fmt::print("{},{},{} -> {:<#010b}\n", state.i, state.j, directionToString(state.d), reachMap(state.i, state.j));
             }
         }
     }

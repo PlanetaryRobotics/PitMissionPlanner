@@ -2,10 +2,10 @@
 #ifndef TERRAINMAP_H
 #define TERRAINMAP_H
 
-#include <tinyexr.h>
 #include <cmath>
 #include <fmt/format.h>
 #include <fstream>
+#include <tinyexr.h>
 #include <vector>
 
 template <typename T> class TerrainMap {

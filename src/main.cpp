@@ -1,31 +1,17 @@
-#include "argh.h"
+#include "buildmaps.h"
 #include "config.h"
-#include "flat_hash_map.hpp"
 #include "image.h"
-#include "maps.h"
-#include "ortools/constraint_solver/routing.h"
-#include "ortools/constraint_solver/routing_enums.pb.h"
-#include "ortools/constraint_solver/routing_index_manager.h"
-#include "ortools/constraint_solver/routing_parameters.h"
 #include "path.h"
 #include "plan.h"
-#include "priority_queue.h"
 #include "terrainmap.h"
 #include "terrainmesh.h"
-#include "toml.hpp"
 #include "vantage.h"
 #include <Eigen/Dense>
 #include <algorithm>
-#include <array>
+#include <chrono>
 #include <filesystem>
 #include <fmt/format.h>
 #include <fmt/ostream.h>
-#include <iostream>
-#include <numeric>
-#include <optional>
-#include <unordered_set>
-
-#include <chrono>
 
 // Global configuration structure
 PlannerConfiguration config;
@@ -69,7 +55,7 @@ int main(int argc, char *argv[]) {
 
     // Construct lander communications map.
     TerrainMapFloat commsMap = buildCommsMap(tmesh, elevationMap, landingState);
-    TerrainMapFloat distanceMap = computeDistanceTransform(commsMap);
+
     // Flood-fill reachable safe terrain.
     TerrainMapU8 reachMap = buildReachabilityMap(commsMap, slopeAtlas, landingState);
 
@@ -127,7 +113,7 @@ int main(int argc, char *argv[]) {
     // Save some maps.
     {
         {
-            auto map = distanceMap;
+            auto map = commsMap;
             drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
             saveEXR(map, config.outputDir + "distance.exr");
         }
@@ -295,13 +281,10 @@ int main(int argc, char *argv[]) {
     }
 
     // Compute paths between all pairs of k vantages plus the landing site.
-    auto tstart = std::chrono::high_resolution_clock::now();
-    const auto paths2 = planAllPairsSLOW(allSites, slopeAtlas, commsMap);
-    auto tmid = std::chrono::high_resolution_clock::now();
+    auto t0 = std::chrono::high_resolution_clock::now();
     const auto paths = planAllPairs(allSites, slopeAtlas, commsMap);
-    auto tstop = std::chrono::high_resolution_clock::now();
-    fmt::print("SLOW: {} sec\n", std::chrono::duration_cast<std::chrono::milliseconds>(tmid - tstart).count() / 1000.0);
-    fmt::print("FAST: {} sec\n", std::chrono::duration_cast<std::chrono::milliseconds>(tstop - tmid).count() / 1000.0);
+    auto t1 = std::chrono::high_resolution_clock::now();
+    fmt::print("ELAPSED: {} sec\n", std::chrono::duration_cast<std::chrono::milliseconds>(t1-t0).count() / 1000.0);
 
     // Organize path costs into convenient matrices for route planning.
     Eigen::MatrixXd costs(allSites.size(), allSites.size());
@@ -314,12 +297,9 @@ int main(int argc, char *argv[]) {
             dists(a, b) = paths[a][b].dist;
         }
     }
-    // fmt::print("Costs:\n{}\n", costs);
-    // fmt::print("Dists:\n{}\n", dists);
 
     // Compute exploration route.
     auto route = routeplan(costs);
-
     if (route.size() < allSites.size()) {
         fmt::print("Oh no! I failed to plan a route to all vantages.\n");
     }
@@ -392,7 +372,7 @@ int main(int argc, char *argv[]) {
 
 #pragma omp parallel for
         for (int f = 0; f < path.states.size(); ++f) {
-            // fmt::print("Animating frame {}...\n", f);
+            fmt::print("Animating frame {}...\n", f);
             const auto &s = path.states[f];
             ImageRGB img = baseImg;
 
@@ -401,9 +381,12 @@ int main(int argc, char *argv[]) {
             drawCircle(img, landingSiteI * upsample, landingSiteJ * upsample, r, r + 4, cm::Color(1.0, 1.0, 1.0));
 
             // Draw all coverage the rover has already visited.
-            // Don't check the first state because it will match the landing site.
-            for (int ff = 1; ff <= f; ++ff) {
+            for (int ff = 0; ff <= f; ++ff) {
                 const auto s = path.states[ff];
+
+                // Don't try to draw coverage from the landing site.
+                if( s == path.states[0] ) { continue; }
+
                 const auto vIt = std::find(allSites.begin(), allSites.end(), s);
                 if (vIt != allSites.end()) {
                     int vIdx = std::distance(allSites.begin(), vIt);

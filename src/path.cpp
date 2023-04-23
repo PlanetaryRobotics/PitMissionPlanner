@@ -10,6 +10,10 @@ Path assembleRoute(const std::vector<int> &route, const std::vector<std::vector<
         const Path &path = paths[route[i]][route[i + 1]];
         finalPath = append(finalPath, path);
     }
+    if( config.returnToStart ) {
+        const Path &path = paths[route[route.size()-1]][route[0]];
+        finalPath = append(finalPath, path);
+    }
     return finalPath;
 }
 Path append(const Path &a, const Path &b) {
@@ -80,11 +84,11 @@ std::vector<Path::State> getSuccessors(const Path::State &p, const SlopeAtlas &s
 
         auto inBounds = [&commsMap](int i, int j) -> bool { return (0 <= i && i < commsMap.rows && 0 <= j && j < commsMap.cols); };
 
-        if (inBounds(sf.i, sf.j) && commsMap(sf.i, sf.j) && fwdLonSlope <= config.roverLongitudinalSlopeLimit &&
+        if (inBounds(sf.i, sf.j) && commsMap(sf.i, sf.j) <= config.roverRangeFromComms && fwdLonSlope <= config.roverLongitudinalSlopeLimit &&
             fwdLatSlope <= config.roverLateralSlopeLimit) {
             succs.push_back(sf);
         }
-        if (inBounds(sb.i, sb.j) && commsMap(sb.i, sb.j) && bwdLonSlope <= config.roverLongitudinalSlopeLimit &&
+        if (inBounds(sb.i, sb.j) && commsMap(sb.i, sb.j) <= config.roverRangeFromComms && bwdLonSlope <= config.roverLongitudinalSlopeLimit &&
             bwdLatSlope <= config.roverLateralSlopeLimit) {
             succs.push_back(sb);
         }

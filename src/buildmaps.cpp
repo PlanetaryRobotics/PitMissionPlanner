@@ -1,8 +1,9 @@
-#include "maps.h"
-#include <tuple>
-//#include "terrainmap.h"
-//#include "terrainmesh.h"
+#include "buildmaps.h"
 #include "priority_queue.h"
+#include "terrainmap.h"
+#include "terrainmesh.h"
+#include <tuple>
+
 std::tuple<TerrainMapFloat, TerrainMapFloat, SlopeAtlas> buildTerrainMaps(const TerrainMesh &tmesh, const double mapPitch) {
     const double mapX = tmesh.maxX() - tmesh.minX();
     const double mapY = tmesh.maxY() - tmesh.minY();
@@ -88,6 +89,7 @@ std::tuple<TerrainMapFloat, TerrainMapFloat, SlopeAtlas> buildTerrainMaps(const 
     }
     return std::make_tuple(elevationMap, priorityMap, slopeAtlas);
 }
+
 TerrainMapU8 buildReachabilityMap(const TerrainMapFloat &commsMap, const SlopeAtlas &slopeAtlas, const Path::State &landingSite) {
 
     TerrainMapU8 reachMap(commsMap.width(), commsMap.height(), commsMap.pitch);
@@ -118,47 +120,47 @@ TerrainMapU8 buildReachabilityMap(const TerrainMapFloat &commsMap, const SlopeAt
     }
     return reachMap;
 }
+
 TerrainMapFloat computeDistanceTransform(const TerrainMapFloat &commsMap) {
     TerrainMapFloat distanceMap(commsMap.width(), commsMap.height(), commsMap.pitch);
+
     auto neighbors = [&commsMap](std::pair<int, int> point) {
         int i = point.first;
         int j = point.second;
         std::vector<std::pair<int, int>> succs;
         succs.reserve(8);
         if (i > 0) {
-            if (j > 0)
-                succs.emplace_back(std::make_pair(i - 1, j - 1));
-            succs.emplace_back(std::make_pair(i - 1, j));
-            if (j < commsMap.cols - 1)
-                succs.emplace_back(std::make_pair(i - 1, j + 1));
+            if (j > 0) { succs.emplace_back(i-1, j-1); };
+            succs.emplace_back(i-1, j);
+            if (j < commsMap.cols-1) { succs.emplace_back(i-1, j+1); }
         }
-        if (j > 0)
-            succs.emplace_back(std::make_pair(i, j - 1));
-        if (j < commsMap.cols - 1)
-            succs.emplace_back(std::make_pair(i, j + 1));
-        if (i < commsMap.rows - 1) {
-            if (j > 0)
-                succs.emplace_back(std::make_pair(i + 1, j - 1));
-            succs.emplace_back(std::make_pair(i + 1, j));
-            if (j < commsMap.cols - 1)
-                succs.emplace_back(std::make_pair(i + 1, j + 1));
+        if (j > 0) { succs.emplace_back(i, j-1); }
+        if (j < commsMap.cols-1) { succs.emplace_back(i, j+1); }
+        if (i < commsMap.rows-1) {
+            if (j > 0) { succs.emplace_back(i+1, j-1); }
+            succs.emplace_back(i+1, j);
+            if (j < commsMap.cols-1) { succs.emplace_back(i+1, j+1); }
         }
         return succs;
     };
 
     PriorityQueue<std::pair<int, int>, float> open;
 
+    // Loop over all points on the comms map.
+    // Find points on the contour between "in-comms" and "out-of-comms",
+    // and push all of those points onto the open queue with priority zero.
     for (int i = 0; i < distanceMap.rows; i++) {
         for (int j = 0; j < distanceMap.cols; j++) {
-            if (commsMap(i, j) == 0)
+            if (commsMap(i, j) == 0) {
                 distanceMap(i, j) = std::numeric_limits<float>::infinity();
-            else
+            } else {
                 distanceMap(i, j) = 0.0f;
-            auto curr_neighbors = neighbors(std::make_pair(i, j));
+            }
+            auto curr_neighbors = neighbors({i, j});
+            // If I am in-range, but any of my neighbors are not, then I am on the contour.
             for (const auto &pair : curr_neighbors) {
                 if (commsMap(pair.first, pair.second) == 0) {
-                    // on contour
-                    open.insert(std::make_pair(i, j), 0.0f);
+                    open.insert({i, j}, 0.0f);
                     break;
                 }
             }
@@ -217,7 +219,7 @@ TerrainMapFloat buildCommsMap(const TerrainMesh &tmesh, const TerrainMapFloat &e
         }
     }
 
-    return commsMap;
+    return computeDistanceTransform(commsMap);
 }
 
 TerrainMapFloat buildCoverageMap(const TerrainMesh &tmesh, const TerrainMapFloat &elevationMap, const std::vector<Vantage> &vantages) {

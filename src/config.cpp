@@ -1,7 +1,6 @@
 #include "config.h"
 #include "argh.h"
 #include "toml.hpp"
-#include <array>
 #include <filesystem>
 #include <fmt/format.h>
 #include <fmt/ostream.h>
@@ -11,6 +10,7 @@ void parseConfigFile(PlannerConfiguration &config, const std::string &fileName) 
 
     const toml::table tbl = toml::parse_file(fileName);
     config.numVantages = tbl["Basic"]["NumVantages"].value_or(config.numVantages);
+    config.returnToStart = tbl["Basic"]["ReturnToStart"].value_or(config.returnToStart);
     config.mapPitch = tbl["Basic"]["MapPitch"].value_or(config.mapPitch);
     config.outputDir = tbl["Basic"]["OutputDir"].value_or(config.outputDir) + "/";
     config.drawAnimation = tbl["Basic"]["DrawAnimation"].value_or(config.drawAnimation);
@@ -25,6 +25,7 @@ void parseConfigFile(PlannerConfiguration &config, const std::string &fileName) 
     config.roverLateralSlopeLimit = tbl["Rover"]["LateralSlopeLimit"].value_or(config.roverLateralSlopeLimit);
     config.roverLongitudinalSlopeLimit = tbl["Rover"]["LongitudinalSlopeLimit"].value_or(config.roverLongitudinalSlopeLimit);
     config.roverPointTurnSlopeLimit = tbl["Rover"]["PointTurnSlopeLimit"].value_or(config.roverPointTurnSlopeLimit);
+    config.roverRangeFromComms = tbl["Rover"]["RangeFromComms"].value_or(config.roverRangeFromComms);
 
     config.meshFile = fileDir + "/" + tbl["Advanced"]["MeshFile"].value_or(config.meshFile);
     config.numProbes = tbl["Advanced"]["NumProbes"].value_or(config.numProbes);
@@ -47,6 +48,7 @@ void parseCommandLine(PlannerConfiguration &config, int argc, char *argv[]) {
         fmt::print("    [Basic]\n");
         fmt::print("      -h,   --Help                    Show this help message.\n");
         fmt::print("      -nv,  --NumVantages             The number of vantages to include in the route.\n");
+        fmt::print("      -ret, --ReturnToStart           Force the rover to circle back to the landing site.\n");
         fmt::print("      -p,   --MapPitch                The resolution (meters) to use for generating maps.\n");
         fmt::print("      -o,   --OutputDir               A directory to store the planner output.\n");
         fmt::print("   -anim,   --DrawAnimation           Generate an animation of the rover's route.\n");
@@ -62,6 +64,7 @@ void parseCommandLine(PlannerConfiguration &config, int argc, char *argv[]) {
         fmt::print("      -rh,   --RoverHeight            The height of the comms antenna on the rover.\n");
         fmt::print("      -rs,   --RoverSpeed             The rover's driving speed in m/s .\n");
         fmt::print("      -fov,  --RoverFOV               The rover camera's field-of-view in degrees.\n");
+        fmt::print("      -rrc,  --RoverRangeFromComms    How far can the rover explore without comms?\n");
         fmt::print("\n");
 
         fmt::print("      -lat,  --LateralSlopeLimit      The rover's max lateral slope in degrees.\n");
@@ -100,6 +103,7 @@ void parseCommandLine(PlannerConfiguration &config, int argc, char *argv[]) {
 
     // Basic
     cmdl({"NumVantages", "nv"}, config.numVantages) >> config.numVantages;
+    config.returnToStart |= cmdl[{"ReturnToStart", "ret"}];
     cmdl({"MapPitch", "p"}, config.mapPitch) >> config.mapPitch;
     cmdl({"OutputDir", "o"}, config.outputDir) >> config.outputDir;
     config.outputDir += "/";
@@ -118,6 +122,7 @@ void parseCommandLine(PlannerConfiguration &config, int argc, char *argv[]) {
     cmdl({"LateralSlopeLimit", "lat"}, config.roverLateralSlopeLimit) >> config.roverLateralSlopeLimit;
     cmdl({"LongitudinalSlopeLimit", "lon"}, config.roverLongitudinalSlopeLimit) >> config.roverLongitudinalSlopeLimit;
     cmdl({"PointTurnSlopeLimit", "turn"}, config.roverPointTurnSlopeLimit) >> config.roverPointTurnSlopeLimit;
+    cmdl({"RangeFromComms", "rrc"}, config.roverRangeFromComms) >> config.roverRangeFromComms;
 
     // Advanced
     cmdl({"MeshFile", "mesh"}, config.meshFile) >> config.meshFile;

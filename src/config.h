@@ -1,12 +1,15 @@
 #pragma once
 
 #ifndef CONFIG_H
+#define CONFIG_H
+
 #include <array>
 #include <string>
-#define CONFIG_H
+
 struct PlannerConfiguration {
     // Basic
     int numVantages = 18;         //
+    bool returnToStart = false;   //
     double mapPitch = 1.0;        // meters
     std::string outputDir = "./"; //
     bool drawAnimation = false;
@@ -23,6 +26,7 @@ struct PlannerConfiguration {
     double roverLateralSlopeLimit = 12.0;      // degrees
     double roverLongitudinalSlopeLimit = 20.0; // degrees
     double roverPointTurnSlopeLimit = 5.0;     // degrees
+    double roverRangeFromComms = 100.0;        // meters
 
     // Advanced
     std::string meshFile = "../meshes/lmp-interior.ply"; //
@@ -36,12 +40,15 @@ struct PlannerConfiguration {
 
     std::array<double, 10> visMultipliers = {1.0, 1.0, 0.8, 0.5, 0.2, 0.1, 0.1, 0.1, 0.1, 0.1}; //
 
-    double distCostMultiplier = 1.0;   //
-    double slopeCostMultiplier = 16.0; //
-    double turnCostMultiplier = 1.0;   //
-    double heuristicMultiplier = 1.0;  //
+    double distCostMultiplier  = 1.0;   //
+    double slopeCostMultiplier = 16.0;  //
+    double turnCostMultiplier  = 1.0;   //
+    double commsCostMultiplier = 0.1;   //
+    double heuristicMultiplier = 1.0;   //
 };
+
 void parseConfigFile(PlannerConfiguration &config, const std::string &fileName);
+
 void parseCommandLine(PlannerConfiguration &config, int argc, char *argv[]);
 
 #endif // CONFIG_H

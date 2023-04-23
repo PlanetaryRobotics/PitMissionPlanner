@@ -8,10 +8,15 @@
 #include "terrainmap.h"
 #include "terrainmesh.h"
 #include <Eigen/Dense>
+#include <fmt/format.h>
+#include <fmt/ostream.h>
 #include <vector>
 
-std::pair<std::vector<Path>, int> multipathplan(const SlopeAtlas &slopeAtlas, const TerrainMapFloat &commsMap, const Path::State &start,
-                                                const std::vector<Path::State> &goals, const int threadID = 0) {
+std::pair<std::vector<Path>, int> multipathplan(const SlopeAtlas &slopeAtlas,
+                                                const TerrainMapFloat &commsMap,
+                                                const Path::State &start,
+                                                const std::vector<Path::State> &goals,
+                                                const int threadID = 0) {
     int ROWS = slopeAtlas.rows();
     int COLS = slopeAtlas.cols();
 
@@ -48,15 +53,16 @@ std::pair<std::vector<Path>, int> multipathplan(const SlopeAtlas &slopeAtlas, co
     };
 
     // Compute the cost to travel from one point to another.
-    auto getCost = [&slopeAtlas](const Path::State &a, const Path::State &b) -> double {
+    auto getCost = [&slopeAtlas, &commsMap](const Path::State &a, const Path::State &b) -> double {
         const double slope = slopeAtlas.absolute(b.i, b.j);
         const double dist = slopeAtlas.pitch() * octileDistance(a, b);
         const double turn = 0.25 * std::abs(std::abs(static_cast<int>(b.d) - static_cast<int>(a.d)) - 4);
+        const double comms = commsMap(b.i, b.j);
 
-        // Slightly penalize driving backward.
-        double back = (dist > 0.0 && directionFromTo(a, b) != a.d) ? 1.0 : 0.0;
-
-        return config.slopeCostMultiplier * (slope / 90.0) + config.distCostMultiplier * dist + config.turnCostMultiplier * (turn + back);
+        return config.slopeCostMultiplier * (slope / 90.0) +
+               config.distCostMultiplier * dist +
+               config.turnCostMultiplier * turn +
+               config.commsCostMultiplier * comms;
     };
 
     // Initialize the search.
@@ -211,88 +217,42 @@ std::vector<int> routeplan(const Eigen::MatrixXd &costs) {
     std::vector<int> minRoute;
     int64_t minCost = INF;
 
-    for (int endpoint = 1; endpoint < SITES; ++endpoint) {
-        Eigen::MatrixXd augCosts(SITES + 1, SITES + 1);
-        augCosts.fill(INF);
-        augCosts.block(0, 0, costs.rows(), costs.cols()) = costs;
-        augCosts(SITES, SITES) = 0.0;
+    if( config.returnToStart ) {
+        std::tie(minRoute, minCost) = solveTSP(costs, 0);
+    } else {
+        for (int endpoint = 1; endpoint < SITES; ++endpoint) {
+            Eigen::MatrixXd augCosts(SITES + 1, SITES + 1);
+            augCosts.fill(INF);
+            augCosts.block(0, 0, costs.rows(), costs.cols()) = costs;
+            augCosts(SITES, SITES) = 0.0;
 
-        // START
-        augCosts(SITES, 0) = 0.0;
-        augCosts(0, SITES) = 0.0;
+            // START
+            augCosts(SITES, 0) = 0.0;
+            augCosts(0, SITES) = 0.0;
 
-        // END
-        augCosts(SITES, endpoint) = 0.0;
-        augCosts(endpoint, SITES) = 0.0;
+            // END
+            augCosts(SITES, endpoint) = 0.0;
+            augCosts(endpoint, SITES) = 0.0;
 
-        auto [route, cost] = solveTSP(augCosts, SITES);
-        if (cost < minCost) {
-            minRoute = route;
-            minCost = cost;
-        }
-        // fmt::print("COST {} ROUTE: ", cost);
-        // for(const auto& x : route) { fmt::print("{} ", x); }
-        // fmt::print("\n");
-    }
-
-    // Remove the imaginary depot city from the beginning of the route.
-    minRoute.erase(minRoute.begin());
-
-    // Because of symmetry, the route may traverse
-    // from the endpoint to the landing site.
-    // If the route is backward, flip it!
-    if (minRoute[0] != 0) {
-        std::reverse(minRoute.begin(), minRoute.end());
-    }
-    assert(minRoute[0] == 0);
-
-    return minRoute;
-}
-std::vector<std::vector<Path>> planAllPairsSLOW(const std::vector<Path::State> &sites, const SlopeAtlas &slopeAtlas,
-                                                const TerrainMapFloat &commsMap) {
-    std::vector<std::vector<Path>> allPaths;
-    allPaths.resize(sites.size());
-    for (auto &pathList : allPaths) {
-        pathList.resize(sites.size());
-    }
-
-    int totalExpansions = 0;
-
-// Generate all combinations of two indices into the allSites vector.
-#pragma omp parallel for
-    for (int a = 0; a < sites.size() - 1; ++a) {
-        const Path::State start = sites[a];
-
-        for (int b = a + 1; b < sites.size(); ++b) {
-            std::vector<Path::State> goals;
-            goals.push_back(sites[b]);
-            auto [paths, expansions] = multipathplan(slopeAtlas, commsMap, start, goals, a);
-#pragma omp critical
-            { totalExpansions += expansions; }
-
-            for (const auto &path : paths) {
-                if (path.states.size() == 0) {
-                    continue;
-                }
-                const auto &start = path.states[0];
-                const auto &goal = path.states[path.states.size() - 1];
-
-                // We forgot which (a,b) pair this goal came from.
-                // We have to find this goal in the goals list so we know where
-                // to record things in the costs and dists matrices.
-                {
-                    const auto it = std::find(goals.begin(), goals.end(), goal);
-                    assert(it != goals.cend());
-                    b += std::distance(goals.begin(), it);
-                }
-                allPaths[a][b] = path;
-                allPaths[b][a] = reverse(path);
+            auto [route, cost] = solveTSP(augCosts, SITES);
+            if (cost < minCost) {
+                minRoute = route;
+                minCost = cost;
             }
         }
-    }
-    fmt::print("Total Expansions (Separate): {}\n", totalExpansions);
 
-    return allPaths;
+        // Remove the imaginary depot city from the beginning of the route.
+        minRoute.erase(minRoute.begin());
+
+        // Because of symmetry, the route may traverse
+        // from the endpoint to the landing site.
+        // If the route is backward, flip it!
+        if (minRoute[0] != 0) {
+            std::reverse(minRoute.begin(), minRoute.end());
+        }
+        assert(minRoute[0] == 0);
+    }
+    return minRoute;
 }
 
 std::vector<std::vector<Path>> planAllPairs(const std::vector<Path::State> &sites, const SlopeAtlas &slopeAtlas,
