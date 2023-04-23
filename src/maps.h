@@ -17,4 +17,5 @@ TerrainMapFloat buildCommsMap(const TerrainMesh &tmesh, const TerrainMapFloat &e
                               const Path::State &landingSite);
 TerrainMapFloat buildCoverageMap(const TerrainMesh &tmesh, const TerrainMapFloat &elevationMap,
                                  const std::vector<Vantage> &vantages);
+TerrainMapFloat computeDistanceTransform(const TerrainMapFloat &commsMap);
 #endif

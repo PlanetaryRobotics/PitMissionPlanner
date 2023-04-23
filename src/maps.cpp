@@ -2,6 +2,7 @@
 #include <tuple>
 //#include "terrainmap.h"
 //#include "terrainmesh.h"
+#include "priority_queue.h"
 std::tuple<TerrainMapFloat, TerrainMapFloat, SlopeAtlas> buildTerrainMaps(const TerrainMesh &tmesh,
                                                                           const double mapPitch) {
   const double mapX = tmesh.maxX() - tmesh.minX();
@@ -118,6 +119,61 @@ TerrainMapU8 buildReachabilityMap(const TerrainMapFloat &commsMap, const SlopeAt
     }
   }
   return reachMap;
+}
+TerrainMapFloat computeDistanceTransform(const TerrainMapFloat &commsMap) {
+  TerrainMapFloat distanceMap(commsMap.width(), commsMap.height(), commsMap.pitch);
+  auto neighbors = [&commsMap](std::pair<int, int> point){
+    int i = point.first;
+    int j = point.second;
+    std::vector<std::pair<int, int>> succs;
+    succs.reserve(8);
+    if(i > 0){
+      if(j > 0) succs.emplace_back(std::make_pair(i - 1, j - 1));
+      succs.emplace_back(std::make_pair(i - 1, j));
+      if(j < commsMap.cols - 1) succs.emplace_back(std::make_pair(i - 1, j + 1));
+    }
+    if(j > 0) succs.emplace_back(std::make_pair(i, j - 1));
+    if(j < commsMap.cols - 1) succs.emplace_back(std::make_pair(i, j + 1));
+    if(i < commsMap.rows - 1){
+      if(j > 0) succs.emplace_back(std::make_pair(i + 1, j - 1));
+      succs.emplace_back(std::make_pair(i + 1, j));
+      if(j < commsMap.cols - 1) succs.emplace_back(std::make_pair(i + 1, j + 1));
+    }
+    return succs;
+  };
+
+  PriorityQueue<std::pair<int, int>, float> open;
+
+  for(int i = 0; i < distanceMap.rows; i++){
+    for(int j = 0; j < distanceMap.cols; j++){
+      if(commsMap(i, j) == 0) distanceMap(i, j) = std::numeric_limits<float>::infinity();
+      else distanceMap(i, j) = 0.0f;
+      auto curr_neighbors = neighbors(std::make_pair(i, j));
+      for(const auto &pair : curr_neighbors){
+        if(commsMap(pair.first, pair.second) == 0){
+          //on contour
+          open.insert(std::make_pair(i, j), 0.0f);
+          break;
+        }
+      }
+    }
+  }
+  while(!open.empty()){
+    std::pair<int, int> curr = open.top();
+    open.pop();
+
+    auto succs = neighbors(curr);
+    for(const auto &neighbor : succs){
+      float neighbordt = distanceMap(neighbor.first, neighbor.second);
+      float curdt = distanceMap(curr.first, curr.second);
+      if( neighbordt > curdt + 1.0f){
+        distanceMap(neighbor.first, neighbor.second) = curdt + 1.0f;
+        open.insert(neighbor, curdt + 1.0f);
+      }
+    }
+
+  }
+  return distanceMap;
 }
 
 TerrainMapFloat buildCommsMap(const TerrainMesh &tmesh, const TerrainMapFloat &elevationMap,

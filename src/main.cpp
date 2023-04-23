@@ -69,9 +69,10 @@ int main(int argc, char *argv[]) {
 
   // Construct lander communications map.
   TerrainMapFloat commsMap = buildCommsMap(tmesh, elevationMap, landingState);
-
+  TerrainMapFloat distanceMap = computeDistanceTransform(commsMap);
   // Flood-fill reachable safe terrain.
   TerrainMapU8 reachMap = buildReachabilityMap(commsMap, slopeAtlas, landingState);
+
   {
     for (int d = 0; d < 8; ++d) {
       TerrainMapFloat map(reachMap.width(), reachMap.height(), reachMap.pitch);
@@ -125,6 +126,11 @@ int main(int argc, char *argv[]) {
 
   // Save some maps.
   {
+    {
+      auto map = distanceMap;
+      drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
+      saveEXR(map, config.outputDir + "distance.exr");
+    }
     {
       auto map = elevationMap;
       drawCircle(map, landingSiteX, landingSiteY, 100, 3.0);
