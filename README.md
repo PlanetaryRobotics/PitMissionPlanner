@@ -37,7 +37,12 @@ make
 
 ### Windows
 Enable windows subsystem for linux and install the Ubuntu distro. Then follow the Ubuntu build instructions!
+## Format
 
+In `.clang-format`, you can modify your desired style convention. To enforce your style convention, run the following command:
+```
+make clang-format
+```
 ## Viewing the Results
 The .exr maps produced by the planner can be viewed using the [tev image viewer](https://github.com/Tom94/tev).
 
